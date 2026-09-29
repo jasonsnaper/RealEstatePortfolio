@@ -4,15 +4,20 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-// This is the only test file that writes uploaded files (cover photos,
-// documents) to disk. UPLOADS_DIR/DATA_DIR are read once, at module-load
-// time, by server/db.js — so these overrides MUST be set here, before the
-// requires below pull that module in. Without this, every run of this test
-// file resolved to the project's REAL public/uploads directory and wrote
+// This file writes uploaded files (cover photos, documents) to disk, and
+// booting the app touches DATA_DIR too (it lazily creates a webhook-secret
+// file there). Both env vars are read once, at module-load time, by
+// server/db.js — so these overrides MUST be set here, before the requires
+// below pull that module in. Without this, every run of this test file
+// resolved to the project's REAL public/uploads directory and wrote
 // throwaway fixture files (a tiny PNG, a fake PDF/txt) straight into the
 // real properties folders, colliding with the real seeded property IDs.
 // Pointing both at a fresh temp dir keeps every test run fully isolated
-// from the user's actual photos, documents, and data files.
+// from the user's actual photos, documents, and data files. Every other
+// test file that writes real files (statements.test.js,
+// statementsRoutes.test.js, renterPortal.test.js) copies this same pattern
+// at the top of the file, before its own requires — if you add a new test
+// file that uploads anything or boots the app, it needs this too.
 process.env.UPLOADS_DIR = path.join(os.tmpdir(), `rental-app-test-uploads-${Date.now()}-${process.pid}`);
 process.env.DATA_DIR = path.join(os.tmpdir(), `rental-app-test-datadir-${Date.now()}-${process.pid}`);
 

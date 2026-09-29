@@ -12,6 +12,16 @@ const path = require('path');
 const os = require('os');
 const http = require('http');
 
+// Generating a statement writes a real PDF under UPLOADS_DIR, and booting
+// the app touches DATA_DIR (it lazily creates a webhook-secret file there).
+// Both are read once, at module-load time, by server/db.js — so these
+// overrides MUST be set here, before the requires below pull that module
+// in. See integration.test.js's own copy of this comment for the bug this
+// avoids: without it, every run of this file wrote real statement PDFs
+// straight into the project's REAL public/uploads directory.
+process.env.UPLOADS_DIR = path.join(os.tmpdir(), `rental-app-statements-routes-test-uploads-${Date.now()}-${process.pid}`);
+process.env.DATA_DIR = path.join(os.tmpdir(), `rental-app-statements-routes-test-datadir-${Date.now()}-${process.pid}`);
+
 const { createApp } = require('../server/index');
 const { openDatabase } = require('../server/db');
 const { createSession } = require('../server/lib/helpers');
