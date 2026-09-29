@@ -1,10 +1,11 @@
 const { apiError, sendJson } = require('../lib/router');
 const { requireAuth, getOwnedPropertyOr404, logAudit } = require('../lib/helpers');
 const { dollarsToCents } = require('../lib/money');
-const { ensureChargesGenerated } = require('../lib/chargeGenerator');
+const { ensureChargesGenerated, periodWithinLeaseTerm } = require('../lib/chargeGenerator');
 const { getChargeStatus } = require('../lib/rentStatus');
 const { todayInTimezone } = require('../lib/dates');
 const { recordChargePayment } = require('../lib/paymentAllocation');
+const { generateStatement } = require('../lib/statements');
 
 function serializeCharge(db, charge, today) {
   const payments = db.prepare('SELECT * FROM payments WHERE charge_id = ? ORDER BY paid_at').all(charge.id);
@@ -29,7 +30,8 @@ function serializeCharge(db, charge, today) {
 function serializeLease(db, lease, timezone) {
   const history = db.prepare('SELECT * FROM lease_rent_history WHERE lease_id = ? ORDER BY effective_date').all(lease.id);
   const today = todayInTimezone(timezone);
-  const charges = db.prepare('SELECT * FROM charges WHERE lease_id = ? ORDER BY period_start DESC').all(lease.id);
+  const charges = db.prepare('SELECT * FROM charges WHERE lease_id = ? ORDER BY period_start DESC').all(lease.id)
+    .filter((c) => periodWithinLeaseTerm(lease, c.period_start));
   const currentRent = [...history].reverse().find((h) => h.effective_date <= today);
   return {
     id: lease.id,
@@ -171,11 +173,50 @@ function registerLeaseRoutes(router, { db }) {
     const owner = requireAuth(db, req);
     const lease = getOwnedLeaseOr404(owner.id, req.params.id);
     const { endDate, depositDisposition } = req.body;
+    const finalEndDate = endDate || todayInTimezone(lease.property_timezone);
+
+    // Top up charges through today BEFORE flipping the status: ensureChargesGenerated
+    // only backfills an ACTIVE lease (see its own header comment), so this is the
+    // last moment it can run without a separate call. It always did this on every
+    // later page load anyway — doing it here just means the final statement
+    // generated below doesn't miss a period that would have appeared a moment later.
+    if (lease.status === 'active') ensureChargesGenerated(db, lease.id, lease.property_timezone);
+
     db.prepare(`
       UPDATE leases SET status='ended', end_date=?, deposit_disposition=?, ended_at=datetime('now') WHERE id=?
-    `).run(endDate || todayInTimezone(lease.property_timezone), depositDisposition || null, lease.id);
+    `).run(finalEndDate, depositDisposition || null, lease.id);
     logAudit(db, { actorType: 'owner', actorId: owner.id, action: 'end_lease', entityType: 'lease', entityId: lease.id, after: req.body });
-    sendJson(res, 200, { ok: true });
+
+    // Auto-generate a closing statement covering the whole tenancy, capped at
+    // the move-out date — the same "lease to date" range an owner could
+    // generate by hand from the Tenant & Lease tab (see statements.js's
+    // resolveRange), just produced automatically so there's always at least
+    // one final statement on file the moment a lease ends, without relying on
+    // the owner to remember. Deliberately NOT auto-shared with the renter —
+    // same reasoning as the manual /share route: right after a move-out is
+    // exactly when a deposit deduction or last-minute charge is most likely to
+    // still need entering, so the owner should get to look the totals over
+    // before a renter sees them. This must never fail the end-lease action
+    // itself — the lease being ended is what the owner actually asked for;
+    // the lease's status has already changed by this point, so a PDF/disk
+    // problem is logged and swallowed rather than surfacing as an error for a
+    // request that, from the owner's point of view, already succeeded.
+    let finalStatement = null;
+    try {
+      const property = db.prepare('SELECT * FROM properties WHERE id = ?').get(lease.property_id);
+      finalStatement = generateStatement(db, {
+        lease, property, rangeType: 'lease_to_date', rangeStart: lease.start_date, rangeEnd: finalEndDate,
+        generatedBy: 'owner', generatedByRenterId: null, isSample: !!property.is_sample,
+      });
+      logAudit(db, {
+        actorType: 'owner', actorId: owner.id, action: 'generate_statement', entityType: 'payment_statement', entityId: finalStatement.id,
+        after: { leaseId: lease.id, rangeType: 'lease_to_date', rangeStart: lease.start_date, rangeEnd: finalEndDate, auto: true },
+      });
+    } catch (err) {
+      console.error(`[end lease] Failed to auto-generate a final statement for lease ${lease.id}:`, err);
+    }
+
+    sendJson(res, 200, { ok: true, finalStatementId: finalStatement ? finalStatement.id : null });
   });
 
   // Recording a payment/refund/reversal against a specific charge. Also mirrors

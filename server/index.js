@@ -25,6 +25,12 @@ const { registerTenantPortalRoutes } = require('./routes/tenantPortal');
 const { registerMockCheckoutRoutes } = require('./routes/mockCheckout');
 const { registerWebhookRoutes } = require('./routes/webhooks');
 const { registerSampleDataRoutes } = require('./routes/sampleData');
+const { registerRenterAuthRoutes } = require('./routes/renterAuth');
+const { registerRenterManagementRoutes } = require('./routes/renterManagement');
+const { registerRenterPortalRoutes } = require('./routes/renterPortal');
+const { registerStatementRoutes } = require('./routes/statements');
+const { requireRenterAuth } = require('./lib/renterAuth');
+const { renterCanSeeDocument, renterLeaseIds } = require('./lib/renterAccess');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -33,6 +39,7 @@ const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8', '.json': 'application/json',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
 };
 
 function readRawBody(req, maxBytes = 2 * 1024 * 1024) {
@@ -70,6 +77,10 @@ function createApp({ db, port }) {
   registerTenantPortalRoutes(router, { db, appBaseUrl });
   registerMockCheckoutRoutes(router, { db, port });
   const handleMockWebhook = registerWebhookRoutes(router, { db });
+  registerRenterAuthRoutes(router, { db });
+  registerRenterManagementRoutes(router, { db, appBaseUrl });
+  registerRenterPortalRoutes(router, { db, appBaseUrl });
+  registerStatementRoutes(router, { db });
 
   // The tenant's entry point (from a copied payment link) is just the SPA
   // shell — the page itself reads the token out of the URL and calls the
@@ -122,6 +133,37 @@ function createApp({ db, port }) {
       // rather than failing immediately, in case an owner is previewing their
       // own file with a stray ?token= in the URL.
     }
+
+    // A signed-in renter (server/lib/renterAuth.js's separate renter_session
+    // cookie — never the owner's) can reach three kinds of file, each via its
+    // own explicit check, same narrow spirit as the token branch above: a
+    // document actually shared with them (by lease or by name), a maintenance
+    // photo on a request filed against their own lease, or a statement the
+    // owner has explicitly shared. Never property-wide access to anything.
+    try {
+      const renter = requireRenterAuth(db, req);
+      if (kind === 'documents') {
+        const doc = db.prepare('SELECT * FROM documents WHERE property_id = ? AND file_path = ?').get(propertyId, filename);
+        if (doc && renterCanSeeDocument(db, renter.id, doc.id)) return true;
+      } else if (kind === 'maintenance') {
+        const photo = db.prepare(`
+          SELECT mp.*, mr.lease_id FROM maintenance_photos mp JOIN maintenance_requests mr ON mr.id = mp.maintenance_request_id
+          WHERE mr.property_id = ? AND mp.file_path = ?
+        `).get(propertyId, filename);
+        if (photo && photo.lease_id && renterLeaseIds(db, renter.id).includes(photo.lease_id)) return true;
+      } else if (kind === 'statements') {
+        const statement = db.prepare(`
+          SELECT ps.* FROM payment_statements ps JOIN leases l ON l.id = ps.lease_id
+          WHERE l.property_id = ? AND ps.file_path = ?
+        `).get(propertyId, filename);
+        if (statement && statement.shared_with_renter && renterLeaseIds(db, renter.id).includes(statement.lease_id)) return true;
+      }
+      // kind === 'cover': never renter-visible via this path — falls through.
+    } catch (e) {
+      // No renter session, or it's expired/invalid — fall through to the
+      // owner-session check below (or ultimately, denial).
+    }
+
     try {
       const owner = requireAuth(db, req);
       const property = db.prepare('SELECT id FROM properties WHERE id = ? AND owner_id = ?').get(propertyId, owner.id);
@@ -162,6 +204,15 @@ function createApp({ db, port }) {
     }
     if (url.pathname.startsWith('/uploads/')) return handleUploadRequest(req, res, url.pathname);
     if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/pay/')) return handleRequest(router, req, res);
+
+    // The renter portal's entry point — a separate SPA shell from the owner
+    // dashboard's index.html, kept at its own path so a renter's bookmark or
+    // an invitation/reset link (which route client-side via a #hash, so the
+    // server only ever sees the bare path) always lands on the right app
+    // shell rather than the owner dashboard's.
+    if (url.pathname === '/renter' || url.pathname.startsWith('/renter/')) {
+      return serveStaticFile(res, path.join(PUBLIC_DIR, 'renter.html'));
+    }
 
     // Static frontend files. Default to index.html for the root and for any
     // unknown path so client-side routing (e.g. /property?id=1) keeps working.

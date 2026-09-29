@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { dollarsToCents, centsToDisplay } = require('../server/lib/money');
 const { addDays, addMonths, clampedDate, compareDates } = require('../server/lib/dates');
 const { getChargeStatus, summarizeStatuses } = require('../server/lib/rentStatus');
-const { computePeriodsToCharge, rentEffectiveOn, ensureChargesGenerated } = require('../server/lib/chargeGenerator');
+const { computePeriodsToCharge, rentEffectiveOn, ensureChargesGenerated, periodWithinLeaseTerm } = require('../server/lib/chargeGenerator');
 const { openDatabase } = require('../server/db');
 
 // ---- money ----
@@ -156,6 +156,20 @@ test('computePeriodsToCharge generates one period per calendar month, due date c
   assert.equal(periods[0].due_date, '2026-01-31');
   assert.equal(periods[1].due_date, '2026-02-28'); // clamped, not rolled into March
   assert.equal(periods[2].due_date, '2026-03-31');
+});
+
+test('periodWithinLeaseTerm excludes periods after an ended lease\'s end date, but nothing for an active one', () => {
+  const active = { status: 'active', end_date: null };
+  assert.equal(periodWithinLeaseTerm(active, '2099-01-01'), true); // active leases have no cutoff
+
+  const ended = { status: 'ended', end_date: '2024-06-30' };
+  assert.equal(periodWithinLeaseTerm(ended, '2024-06-01'), true); // the final month itself still counts
+  assert.equal(periodWithinLeaseTerm(ended, '2024-07-01'), false); // the month after move-out does not
+
+  // Defensive: an "ended" lease somehow missing its end date shouldn't
+  // exclude everything — fail open rather than hide real charges.
+  const endedNoDate = { status: 'ended', end_date: null };
+  assert.equal(periodWithinLeaseTerm(endedNoDate, '2030-01-01'), true);
 });
 
 test('ensureChargesGenerated is idempotent and never rewrites an existing charge', () => {

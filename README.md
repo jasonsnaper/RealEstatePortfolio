@@ -15,68 +15,63 @@ before connecting real bank accounts or sending a real tenant a real payment lin
 
 ## Update log
 
-**This update** (applied directly to your existing app — all of your properties, tenants, photos,
-documents, and financial records were left exactly as they were; nothing here required you to
-re-enter anything). This was in response to a specific report of data disappearing after a
-reload/restart, so it's split below into what's fixed and verified vs. what's still in progress:
+**This update** (renter accounts and a full self-service renter portal — applied directly to your
+existing app; every existing property, tenant, lease, photo, document, and financial record was left
+exactly as it was; nothing here required you to re-enter anything):
+
+- **Renters can now have their own account and sign in** at `/renter` — separate from, and in
+  addition to, the one-time no-login payment link that's always existed (`/pay/link/:token`,
+  unchanged). Signed in, a renter sees their own balance and full charge history, documents actually
+  shared with them, can file and track maintenance requests, pull next month's rent forward and pay
+  it early, and download any statement shared with them — across every lease they're on, past or
+  present. Full details in the new §4.
+- **A "renter" is its own identity**, separate from the plain tenant name/email that's always been on
+  a lease. Add one or more to a lease from the Tenant & Lease tab (co-tenants each get their own
+  login), invite them (a secure one-time link you copy and send yourself — no email provider is
+  configured, see §4), or remove one (revokes access to that lease without deleting the account).
+- **Document sharing reworked to be explicit, per lease** (and, when needed, per individual renter) —
+  replacing a single property-wide "shared with tenant" checkbox that couldn't tell one tenant from
+  another. A one-time migration carried forward anything already shared under the old model only
+  where the intended recipient was unambiguous; anywhere else it's flagged **"Review sharing"** for
+  you to resolve by hand rather than guessed at.
+- **Rental Payment Statement PDFs** — generate one for a lease (a month, a year, the whole tenancy to
+  date, or a custom range), share it to the renter's portal, "email" it (simulated), or delete it.
+  Built with a small hand-written, dependency-free PDF writer, since this app has zero npm
+  dependencies by design — see "The PDF writer, and a real encoding bug it caught" in §7.
+- **Ending a lease now closes the loop properly**: it auto-generates a closing statement for the
+  whole tenancy up to the actual move-out date, and a renter who already had portal access keeps
+  read-only access to that lease's history afterward. This also surfaced a real, previously-
+  undetected bug in how an ended lease's balance was calculated — see "The ended-lease balance bug,
+  confirmed" in §7.
+- **A related sample-data bug, caught and fixed alongside the sharing rework:** the seed script's
+  "shared with tenant" sample documents had quietly stopped being visible to a tenant the moment the
+  model above went explicit. Fixed, and the seed script now also creates one fully active
+  renter-portal login (credentials printed to your terminal alongside the demo owner account — §1)
+  so the renter portal is explorable immediately too.
+- 49 new automated tests (151 total, all passing) — see §7.
+
+**Previous update** (mobile photo picker fix, a data-loss investigation and fix, and Saving/Saved UX
+across the whole app):
 
 - **Fixed: the mobile photo picker forced the phone camera open instead of offering the photo
   library**, so an existing photo could never be chosen, only a brand-new one taken on the spot.
   The picker now detects HEIC photos (by file type, and by extension when the phone reports no
-  type at all) and offers the real library. Covered by 4 new automated tests
-  (`test/photoPicker.test.js`).
+  type at all) and offers the real library. Covered by 4 automated tests (`test/photoPicker.test.js`).
 - **Data loss investigated, root cause identified, and the app now detects and loudly reports the
   unsafe condition instead of failing silently** — a boot-time console warning, a permanent red
   banner in the app itself (before anyone's even signed in), and an unauthenticated
-  `GET /api/system-status` check. Full root cause, the fix, what was actually verified (including a
-  real process kill-and-restart, not just a page reload), and what still needs doing on your live
-  Render service are all reported honestly, in detail, in §7's new **"Persistence verification,
-  step by step"** section — please read that section rather than assuming this bullet is the whole
-  story either way.
-- **Every save and action across the app now shows real Saving/Saved states, tied to the server's
-  actual response** — no more optimistic "it probably worked." A failed save keeps your modal open,
-  shows a plain-language error, and preserves everything you typed so you never have to retype it
-  to retry. Rapid double-clicking a save button can no longer fire the request twice. Closing a
-  modal with unsaved changes now asks first, and closing the browser tab/window does too. Building
-  this surfaced and fixed two real pre-existing bugs along the way: canceling a nested confirmation
-  (e.g. "Delete this photo?" from inside the photo viewer) used to destroy the screen underneath it
-  instead of just dismissing the prompt; and canceling out of the mobile photo picker after
-  choosing "keep editing" used to leave broken, blank photo previews behind. Both are fixed and
-  covered by live browser testing — see "Verified by hand, this update" in §6. 5 new automated tests
-  (`test/formSave.test.js`) cover the underlying error-message logic.
-- **Not yet user-visible:** the data model gained new tables and columns to support renter accounts
-  and a tenant-facing portal (login, balance, documents, payments) — this is schema-only groundwork
-  for that still-in-progress feature and changes nothing about how the app looks or behaves today.
-- 9 new automated tests (102 total, all passing) covering everything above — see §6.
-
-**Previous update** (dashboard grid, color-coded numbers, Monthly Mortgage Total card, bank-account
-linking, and the payment-link fix):
-
-- **Dashboard totals no longer scroll sideways.** The financial summary is now a responsive grid
-  (4 columns on wide screens, 2 on tablets, 1 on phones) instead of a horizontally-scrolling strip.
-  Every number wraps instead of clipping. See `public/css/app.css` (`.ledger`) and
-  `public/js/views/dashboard.js` (`renderLedger`).
-- **The numbers are color-coded**, consistently: green for money that's coming in or in your favor
-  (equity, scheduled rent, rent collected, NOI, cash flow — only while actually positive), red for
-  obligations and shortfalls (mortgage principal, mortgage total, expenses, overdue rent — only
-  while actually nonzero/positive), and neutral for everything else, including any of the above
-  when it happens to be exactly **$0** — a brand-new, empty portfolio reads as neutral throughout,
-  not alarmingly red or falsely cheerful green. Labels and minus signs are kept so color is never
-  the only signal.
-- **New card: Monthly Mortgage Total** — the sum of every mortgage's `monthly_payment_cents`
-  across your active properties (correctly handling more than one mortgage on the same property,
-  and excluding archived properties). If any mortgage is missing its payment amount, the total
-  says so explicitly ("Incomplete — N loans missing a payment amount") instead of silently
-  understating itself. See `server/lib/portfolio.js`.
-- **Bank accounts are now a real, first-class feature**, not a single balance glued to a property:
-  a **Bank Accounts** page on the homepage, a clear **Link Bank Account** action per rental, manual
-  accounts (nickname/balance/date, assignable to more than one rental, editable, unlinkable from
-  one rental without touching the others), and a real **Connect a real bank** flow via Plaid —
-  fully implemented and ready to go live the moment you add Plaid credentials (see §5). A property
-  now correctly shows **every** account linked to it, not just the first one.
-- **Fixed: "Get payment link" getting stuck on the loading spinner.** See "The payment-link bug,
-  confirmed" in §6 for the root cause and how it was verified fixed.
-- 32 new automated tests (93 total, all passing) covering everything above — see §6.
+  `GET /api/system-status` check. Full root cause, the fix, and what was actually verified (including
+  a real process kill-and-restart, not just a page reload) are in §8's **"Persistence verification,
+  step by step"** section.
+- **Every save and action across the app shows real Saving/Saved states, tied to the server's actual
+  response** — no more optimistic "it probably worked." A failed save keeps your modal open, shows a
+  plain-language error, and preserves everything you typed. Rapid double-clicking a save button can
+  no longer fire the request twice. Closing a modal (or the browser tab) with unsaved changes asks
+  first. Building this surfaced and fixed two real pre-existing bugs: canceling a nested confirmation
+  used to destroy the screen underneath it instead of just dismissing the prompt, and canceling out
+  of the mobile photo picker after choosing "keep editing" used to leave broken photo previews
+  behind. Both fixed and covered by live browser testing.
+- 9 automated tests (102 total at the time) covering everything above.
 
 ---
 
@@ -99,6 +94,14 @@ Email:    demo@example.com
 Password: password123
 ```
 
+The Maple Street Duplex sample tenant also has an active **renter portal** login, so you can see
+that side of the app too, at **/renter**:
+
+```
+Email:    jordan.alvarez@example.com
+Password: password123
+```
+
 Change that password (or remove the account) before you'd consider this account "yours." Every
 sample property is badged **sample**, and you can wipe all of them in one click from the banner
 at the top of the dashboard once you're ready to add your own — see §3.
@@ -113,10 +116,11 @@ owner account on first visit.
 npm test
 ```
 
-This runs 102 tests (unit + integration) covering money math, rent-status logic, the full
+This runs 151 tests (unit + integration) covering money math, rent-status logic, the full
 payment/webhook flow, multi-tenant data isolation, mortgage totals, bank-account linking,
-payment-link generation, the mobile photo picker's HEIC handling, and the shared save-lifecycle
-error-message logic. See §6 for exactly what's covered.
+payment-link generation, the mobile photo picker's HEIC handling, the shared save-lifecycle
+error-message logic, renter accounts and the renter portal, document sharing, and payment
+statements (including the hand-written PDF writer). See §7 for exactly what's covered.
 
 ---
 
@@ -129,16 +133,21 @@ error-message logic. See §6 for exactly what's covered.
   per property — this is enforced in the portfolio math itself and covered by automated tests, not
   just something that happens to look right in the demo data.
 - **Property pages** — one per rental, each with: a cover photo, an activity/photo timeline
-  (with before/after pairing for repairs), documents (each markable as shared with the tenant or
-  private), transactions, property value & capital improvements, mortgage, current tenant & lease
-  (with full rent history and per-period charge status), historical tenants, maintenance requests,
-  and reminders (manual ones you add, plus automatic ones for lease expirations and documents with
-  an expiration date).
-- **Tenant portal** — a link you generate per lease (`/pay/link/:token`, no login required by
-  the tenant) where they can see their charge history, pay what's currently owed, and submit a
-  maintenance request. It deliberately shows the tenant **less** than the owner sees: no bank
-  balances, no mortgage details, no private owner notes, and maintenance requests show no vendor
-  or cost — this is enforced server-side and covered by tests, not just hidden in the UI.
+  (with before/after pairing for repairs), documents (shared with a specific lease — or, when
+  needed, with one specific renter — never property-wide), transactions, property value & capital
+  improvements, mortgage, current tenant & lease (with full rent history, per-period charge status,
+  the renters who have portal access to it, and any payment statements generated for it), historical
+  tenants (a past lease keeps that same renters/statements detail available, read-only), maintenance
+  requests, and reminders (manual ones you add, plus automatic ones for lease expirations and
+  documents with an expiration date).
+- **Two tenant-facing surfaces, for two different jobs.** A **payment link** (`/pay/link/:token`, no
+  login) is the fast path for a one-off payment — generate one from a lease, send it, done. The
+  **renter portal** (`/renter`, §4) is the full self-service experience for a renter you've actually
+  set up with their own account: balance and full charge history, documents shared with them, filing
+  and tracking maintenance requests, paying early, and downloading statements, across every lease
+  they're on. Both deliberately show a renter **less** than the owner sees — no bank balances, no
+  mortgage details, no private owner notes, and maintenance requests show no vendor or cost — this is
+  enforced server-side and covered by tests, not just hidden in the UI.
 
 ### Rent status, precisely
 
@@ -163,7 +172,7 @@ carry the same status label.
 
 | Property | What it demonstrates |
 |---|---|
-| Maple Street Duplex | Steady on-time tenant, a rent increase partway through, a mortgage with real payment history, three valuations, a capital improvement, one completed + one open maintenance request (with a before/after photo pair), tenant-shared and private documents. |
+| Maple Street Duplex | Steady on-time tenant, a rent increase partway through, a mortgage with real payment history, three valuations, a capital improvement, one completed + one open maintenance request (with a before/after photo pair), a tenant-shared document and a private one, and an active **renter portal** login (§1, §4) so you can see that side of the app too. |
 | Birchwood Bungalow | **Shares Maple's bank account** (proves the no-double-counting math), a messier payment history (on-time, paid-late, two separate partial payments in different months — so you can see the "older unpaid period" callout in action), a high-priority open maintenance request. |
 | Cedar Court Cottage | Currently vacant, own separate bank account, one fully-paid **historical** tenant with a deposit returned in full. |
 | Willow Loft | **Archived** (hidden from the default dashboard view; find it via the "Archived" toggle), a past tenant whose deposit was **partially withheld**, no bank account linked at all. |
@@ -175,7 +184,117 @@ to add your own. This is a real delete, not an archive; there's no undo.
 
 ---
 
-## 4. Payments: what's real and what's simulated
+## 4. Renter accounts & portal
+
+Every lease has always had a plain tenant name/email. A **renter** is a separate, additional thing:
+an actual account a tenant can sign in with, at `/renter`, to see their own information instead of
+you having to look everything up and relay it to them yourself. A lease can have zero renters
+(nothing changes — the payment-link flow in §5 still works exactly as it always has), one, or
+several — e.g. two co-tenants, each with their own login.
+
+### Setting a renter up
+
+From a lease's **Tenant & Lease** tab, under **Renters (portal access)**:
+
+- **Add renter** — name, email, phone, and a role (primary/co-renter). The email is what they sign
+  in with; it can be added later if you don't have it yet, but nothing can be invited without one.
+- **Invite** — generates a secure, single-use link for that renter to set their own password and
+  sign themselves in. No email/SMS provider is configured (deliberately — see "What's simulated"
+  below), so you copy the link yourself and send it however you'd send anything else.
+- **Remove** — revokes that renter's access to *this* lease. It does not delete their account or any
+  other lease they're linked to.
+
+Adding the same email on a second lease (the same person renting a different unit later, or a
+co-tenant already known from another property) links it to the **same** renter identity rather than
+creating a duplicate — they sign in once and see every lease they're linked to. If a duplicate
+account does happen to get created some other way, `POST /api/renters/merge` folds one into the
+other, transferring its lease access and resolving its old sessions transparently; there is
+deliberately no owner-facing UI for this yet — a small enough edge case that a clean API now seemed
+more valuable than a speculative screen for it later.
+
+### What a signed-in renter sees
+
+Once signed in, a renter's portal (a separate, smaller page — not the owner's app) shows, per lease
+they have access to:
+
+- **Balance & full charge history** — every period, its due/late dates, amount, and what's been
+  paid, computed by the exact same `server/lib/rentStatus.js` every other view in this app reads
+  from (§2's "Rent status, precisely" applies here too).
+- **Pay what's due, or pay early** — the normal "pay what's owed" flow, plus pulling *next* period's
+  charge forward to pay it before it would otherwise even appear.
+- **Documents** — only ones actually shared with their lease (or with them personally) — never one
+  shared with a different tenant, past or present, on the same property.
+- **Maintenance** — file a new request and track ones already filed, with the same owner-only fields
+  (vendor, actual cost) hidden that the payment-link portal already hides.
+- **Payment statements** — download any statement the owner has generated **and shared** (generating
+  one doesn't expose it automatically — see below).
+
+A renter whose lease has since ended keeps this same read-only access to that lease's history and
+statements afterward (see "Move-out and historical access" below) — signing in still works, there's
+just nothing new to pay or file.
+
+### Document sharing, precisely
+
+A document is visible to a renter **only** through an explicit share, scoped to either a lease
+(everyone currently on it) or one specific renter (e.g. kept visible to someone individually after
+their co-tenant moved out). There is no property-wide "shared with everyone" setting anymore. When
+uploading a document you can share it with one or more leases immediately; an already-uploaded
+document's **Manage sharing** button changes that later, at any time, for active or ended leases
+alike.
+
+This replaced an older, single `is_shared_with_tenant` checkbox that had no way to distinguish one
+tenant from another on a property with more than one lease. A one-time migration carried forward
+anything already shared under that model — but only onto a property with **exactly one** lease ever,
+where the intended recipient is unambiguous; anywhere else (more than one lease, past or present) the
+document is left exactly as it was and flagged **"Review sharing"** for you to resolve by hand,
+rather than guessed at and potentially shown to the wrong person.
+
+### Payment statements
+
+Generate a PDF statement for a lease over: a specific month, a specific year, the whole tenancy to
+date (capped at the lease's own end date once it's ended — never at "today" for a lease that's
+already over), or a custom date range. Each statement is an independent, immutable snapshot — a
+correction to the ledger afterward never silently rewrites a statement someone may have already
+downloaded; generating again just produces a second, more current one alongside the first. From the
+list: **Download**, **Share**/**Unshare** (whether it appears in the renter's own portal — separate
+from generating it, so you can look a statement over before a renter ever sees it exists), **Email**
+(see below), or **Delete**.
+
+The PDF itself is produced by a small, hand-written, dependency-free PDF writer
+(`server/lib/pdf.js`) — this app has zero npm dependencies by design (see the top of this document),
+and this sandbox's npm registry access is blocked outright, so pulling in a PDF library wasn't
+reachable even as an option. See "The PDF writer, and a real encoding bug it caught" in §7 for what
+that involved and what it caught.
+
+### Move-out and historical access
+
+Ending a lease (**End lease**, on the Tenant & Lease tab) now also generates a closing statement
+automatically, covering the whole tenancy up through the actual move-out date you record — the same
+"whole tenancy to date" a statement would show if you generated it by hand, just done for you so
+there's always at least one closing statement on file the moment a lease ends. It is **not**
+auto-shared with the renter (same reasoning as any other statement: you review it first — a deposit
+deduction or last-minute charge is often still being entered right around move-out).
+
+An ended lease moves to **Historical Tenants** and drops off the active Tenant & Lease tab, but it
+doesn't lose anything: **View lease details** on a past tenant's card expands, in place, the same
+charges, renters, and payment-statements sections the active tab has — so the auto-generated closing
+statement (and the ability to invite a renter for the first time purely so they can look back at
+their own history — the "historical access" case) both stay reachable, not just the summary facts
+(dates, final rent, deposit disposition) that were there before.
+
+### What's simulated
+
+**Invite links and "emailing" a statement are both simulated** — no email or SMS provider is
+configured in this environment, the same honest position §5 takes on a real payment provider and §6
+takes on a real bank connection. An invite generates a real, working, single-use link that you copy
+and send yourself; "Email" on a statement logs what *would* be sent (to the server console) and marks
+the statement shared, but no message actually leaves this server. Everything up to that boundary —
+the tokens, the expiry, the single-use enforcement, the audit trail — is real and tested; there's
+simply no outside provider wired in to hand the message to.
+
+---
+
+## 5. Payments: what's real and what's simulated
 
 Every route in the app talks to "the payment provider" through one small interface
 (`server/lib/paymentProvider.js`) — never to a specific vendor's SDK directly. Today there is
@@ -220,7 +339,7 @@ separation is the point of the interface.
 
 ---
 
-## 5. Bank accounts
+## 6. Bank accounts
 
 Two ways to track a bank account, side by side:
 
@@ -282,9 +401,9 @@ existed since the first build and is unrelated to which of the above two account
 
 ---
 
-## 6. What's actually been tested
+## 7. What's actually been tested
 
-**Automated (102 tests across 9 files, `npm test`, all passing):**
+**Automated (151 tests across 13 files, `npm test`, all passing):**
 - Money math (dollar/cents parsing and formatting) and date math (month/year boundaries, clamping
   short months) — the kind of off-by-one bugs that are easy to ship silently.
 - The full rent-status state machine (upcoming/due/late/partial/paid), including refunds and
@@ -344,6 +463,49 @@ existed since the first build and is unrelated to which of the above two account
   a network/timeout failure (passed through as-is), and a safe fallback for anything that isn't
   even API-shaped (so a bug in the error handling itself can't throw a second, more confusing error
   on top of the first).
+- **New — Renter accounts & the renter portal** (`test/renterPortal.test.js`, 21 tests): the full
+  owner-side lifecycle (add a renter, invite them, preview an invite before it's accepted, adding the
+  same email to two leases linking one identity rather than a duplicate); the full renter-side
+  lifecycle (accepting an invite sets a password and signs them in immediately, a used invite token
+  can't be reused, login rejects a bad password and an unknown email with the **same** generic
+  message so no one can enumerate which emails have accounts, forgot-password issues a working
+  single-use reset token and the old password stops working afterward, logout actually ends the
+  session); a signed-in renter sees the correct balance and **only** their own lease, never another
+  owner's; a request with no session cookie at all gets a 401, not a peek at anything; document
+  sharing is explicit and lease-scoped, confirmed both that a shared document appears and that one
+  shared with a *different* lease on the same property does not; filing a maintenance request through
+  the portal attributes it to the correct lease; paying a future period early via the
+  advance-charge endpoint, and a checkout on an already-fully-paid charge correctly refused (409); an
+  ended lease stays visible to its own renter (historical access) while maintenance/checkout are
+  correctly refused on it, and — the regression test for the balance bug below — an ended lease's
+  charges (both the list summary and the per-lease detail) exclude every period after its end date;
+  merging a duplicate renter reassigns lease access and resolves the old session transparently; a
+  statement stays invisible to the renter until the owner shares it, then becomes visible and
+  downloadable, and a statement belonging to a different owner can't be shared, emailed, or deleted
+  by someone else.
+- **New — Payment statement generation & math** (`test/statements.test.js`, 7 tests): totals sum
+  correctly across a fully paid, partially paid, and unpaid charge; a refund correctly reduces net
+  paid and reopens the outstanding balance; charges outside the requested range are excluded from
+  both the totals and the rendered table; a range with no charges at all still produces a valid PDF
+  saying so, with zero totals, rather than erroring; sample-property statements are watermarked in
+  the PDF and flagged in the serialized record; generating a statement twice for the same lease/range
+  produces two independent, immutable rows — never silently overwrites the first; a co-tenant's name
+  is included in the statement header when present.
+- **New — Owner-facing statement routes** (`test/statementsRoutes.test.js`, 10 tests): generating and
+  listing a statement over the HTTP layer (not just the underlying PDF math above), including that
+  the owner-facing list carries a downloadable URL and the file route itself still requires
+  authentication; a month-range statement uses the calendar month regardless of what day it's
+  actually generated on; cross-owner isolation on generate/share/email/delete; sharing toggles
+  portal visibility without emailing anything; emailing simulates sending, records who it was "sent"
+  to, and auto-shares as a side effect; deleting removes it from the list; **and the specific
+  regression this update's biggest bug produced** — a `lease_to_date` statement for an ended lease
+  stops at the lease's own end date, not at today (see "The ended-lease balance bug, confirmed"
+  below) — plus three more covering the new auto-generated closing statement specifically: ending a
+  lease generates exactly one unshared closing statement with the correct range, correcting an
+  already-ended lease's end date generates a fresh statement rather than erroring or replacing the
+  old one, and ending another owner's lease is refused before it ever generates anything.
+- **New — The PDF writer** (`test/pdf.test.js`, 9 tests): see "The PDF writer, and a real encoding
+  bug it caught" below.
 
 ### The payment-link bug, confirmed
 
@@ -376,6 +538,56 @@ in a real browser (Playwright) through three scenarios and confirmed none of the
    comes back at all (simulating a dropped connection): the modal correctly shows a network-error
    message with a **Retry** button, and clicking Retry (once the connection "recovers") succeeds
    and shows the link. Nothing hangs at any point.
+
+### The ended-lease balance bug, confirmed
+
+**Root cause:** `ensureChargesGenerated` backfills every elapsed monthly period for an **active**
+lease up through today, by design — a lease with a start date long in the past generates many
+months of charges the first time anyone looks at it. That's correct while the lease is still active,
+but nothing ever retroactively removed those rows if the lease was **later ended with a backdated
+end date** — recording a move-out that had already happened. The charges table could therefore
+contain real rows for periods after the actual move-out date, generated on some earlier day while the
+lease was still marked active, before the owner got around to recording exactly when it ended. Every
+balance and charge list built on that table — the owner's own lease view, the renter portal, and a
+"lease to date" statement — inherited the same inflated, wrong picture: a lease that actually ran 18
+months could show 45 periods and tens of thousands of dollars "owed" for time when, by the owner's
+own recorded end date, no tenancy existed at all.
+
+**The fix:** a single, tested, shared predicate (`periodWithinLeaseTerm`, in
+`server/lib/chargeGenerator.js`) that answers "is this charge period genuinely within this lease's
+term" — true for any period on an active lease, true for an ended lease only up to its own end date.
+Applied as a **display and query filter** everywhere a lease's charges are shown or totaled (the
+owner's lease view, both renter-portal endpoints, and a statement's date-range resolution) —
+deliberately **not** a deletion. Payments, payment links, and payment sessions all reference a charge
+row by id, so removing a "phantom" charge that happened to already have something recorded against it
+would risk breaking that reference or silently discarding a real payment's context; filtering what's
+*displayed* achieves the same correctness without that risk, and without touching data that existed
+before the fix.
+
+**Verified, not just reasoned about:** a lease started two years in the past (so creating it alone
+backfills many months of charges) and then ended six months ago produces charges after that end date
+in the raw table by construction — confirmed directly against the database, not assumed — and then
+confirmed that none of those post-end-date periods appear in: the owner's own lease view, the
+renter's list-of-leases summary, the renter's per-lease detail, or a "lease to date" statement's
+rendered range. Four dedicated regression tests, one per surface, are in the automated suite above.
+
+### The PDF writer, and a real encoding bug it caught
+
+Generating a real PDF with zero npm dependencies means writing the handful of PDF operators this app
+actually needs by hand (`server/lib/pdf.js`) — positioning text, drawing a straight line, paging —
+and, because nothing here is a battle-tested library, testing the *output*, not just the code that
+produces it.
+
+That process caught a real bug: PDF's default text encoding (`WinAnsiEncoding`, roughly
+Windows-1252) takes exactly one byte per character, but naively UTF-8-encoding a JavaScript string
+containing something as ordinary as a middle dot (`·`) or an en dash (`–`) — both used in this app's
+own statement layout — emits *multiple* bytes, which a PDF viewer then reads back as several wrong
+characters apiece. This wasn't caught by eyeballing generated output; it was caught by actually
+decoding it: running a generated statement back through `pdftotext` and comparing the extracted text
+against what was written in, which is exactly what `test/pdf.test.js` does for plain ASCII, that
+specific punctuation, accented Latin letters, the smart-quotes/ellipsis block, and — a character
+genuinely outside WinAnsi's repertoire — confirming it falls back to `?` rather than corrupting
+whatever comes after it, instead of silently breaking partway through a page.
 
 ### Verified by hand, original build
 
@@ -451,7 +663,7 @@ live in a real browser (Playwright) rather than by inspection, across nine scena
 9. **No new console/page errors** were observed during any of the above, checked by listening for
    them for the whole run rather than only looking where a bug was expected.
 
-This same round also added the misconfigured-storage warning banner described in §7. That banner's
+This same round also added the misconfigured-storage warning banner described in §8. That banner's
 condition (`server/lib/storageStatus.js`) was checked directly against the possible combinations of
 `DATA_DIR`/`UPLOADS_DIR`/hosting-provider environment variables, and the banner and matching
 `/api/system-status` response were confirmed to appear and disappear exactly as that logic
@@ -467,23 +679,103 @@ click-through in this section, but doesn't have a permanent, fast, `npm test`-dr
 test the way the server-side logic does. `api.js` itself (no DOM dependency) is the exception and
 is fully covered by real automated tests (`test/apiClient.test.js`).
 
-**Not exercised at all:** anything involving a real payment provider or a real, credentialed Plaid
-connection, since neither has credentials configured in this environment (§4, §5) — the code paths
-are real and tested up to that boundary, but there is nothing to test past it until you add your
-own credentials.
+**Not exercised at all:** anything involving a real payment provider, a real, credentialed Plaid
+connection, or a real email/SMS provider for renter invites and statement emails, since none of the
+three have credentials configured in this environment (§4, §5, §6) — the code paths are real and
+tested up to that boundary, but there is nothing to test past it until you add your own credentials.
+
+### Verified by hand, renter portal & statements update
+
+The renter portal is a second, fully separate front end (`public/renter.html` / `public/js/renter.js`)
+with its own authentication, so it was checked live end-to-end in a real browser rather than assumed
+correct from the server-side tests alone, across both the renter-facing and owner-facing halves:
+
+1. **Renter accept-invite → sign-in → portal, desktop and mobile.** Starting from a real invite link
+   (not a pre-made session), Playwright filled in the accept-invite form, set a password, and landed
+   on the renter's lease list. With two leases under the same email — one active, one already ended —
+   the lease switcher appeared and correctly offered both, labeling the ended one "(ended)". Opening
+   the active lease exercised the Overview, Documents, Maintenance, and Statements tabs in turn; the
+   Maintenance tab's "new request" modal was filled in and submitted for real, and the Documents and
+   Statements tabs both rendered real shared content (a shared lease PDF, a shared statement) instead
+   of an empty state. Switching to the ended lease via the switcher confirmed the historical view
+   renders instead of erroring. The same flow was then repeated at a 390×844 mobile viewport (overview
+   and the maintenance modal), including confirming the photo picker still offers explicit "Take
+   Photo" / "Choose from Library" choices on mobile rather than forcing the camera open — the very bug
+   that was item #1 on this project's original list — so that fix is now confirmed intact under the
+   newer portal UI too, not just in isolation.
+2. **Owner side: adding, inviting, and removing renters.** From a property's Tenant & Lease tab,
+   added a second renter to a lease, confirmed the table updated to show both, generated a real
+   invite link and confirmed it's a usable URL, then removed a renter and watched the confirmation
+   dialog appear and the table drop back to one row — all against a live server, not mocked responses.
+3. **The "Active" badge, seen for the first time.** Every renter created in this project's earlier
+   testing was pre-invite ("Not invited"), so the "Active" badge branch of the renters table had only
+   ever been read in the source, never actually rendered. Using the seed data's demo renter, who has
+   a password from the moment `seed.js` creates it, confirmed in a real page that the badge reads
+   "Active" and — just as importantly — that the "Invite" button is correctly absent for a renter who
+   doesn't need one.
+4. **Document sharing, including the pre-checked-checkbox case.** Uploaded a real file with a
+   lease-sharing checkbox checked at upload time and confirmed the document's "Shared with" column
+   names the renter immediately. Then reopened "Manage sharing" on that same already-shared document
+   specifically to check the case that's easy to get backwards: that the checkbox comes back
+   **pre-checked**, reflecting the document's actual current state rather than a blank form.
+   Unchecking it and saving flipped the column to "Private", confirmed live.
+5. **Payment statements, generated and shared.** Generated a lease-to-date statement from the owner
+   UI, toggled its "shared with renter" flag on and watched the row update, and clicked "email
+   statement" (see "What's simulated" in §4 for exactly what that button does, and doesn't do,
+   without a real provider configured).
+6. **Ending a lease auto-generates its closing statement, with no extra click.** Filled in the
+   end-lease modal (which now explains up front that a closing statement will be generated),
+   submitted it, and confirmed both the dynamic toast text ("Lease ended and a closing statement was
+   generated") and a new row appearing in Payment statements — with zero manual "Generate statement"
+   interaction, matching what `POST /api/leases/:id/end` does server-side (see "The ended-lease
+   balance bug, confirmed" above for the related charge-window logic this same route relies on).
+7. **Historical Tenants: closing a real reachability gap.** Ending a lease is one thing; finding its
+   statement again afterward is another, and the first version of this feature's UI couldn't do the
+   second. Historical Tenants originally opened a small modal with only a charges table — the
+   auto-generated closing statement and the renters section were both built and tested at the API
+   level, but completely unreachable by clicking anything. Rebuilt as an inline "View lease details"
+   expansion instead, and confirmed live: charges, renters, and statements all appear inline, and —
+   the specific case this design exists to get right — opening a real "Generate statement" sub-modal
+   from inside that inline view and saving it leaves the view intact afterward (still showing
+   "Renters (portal access)" and "Charges", now with two statement rows instead of one) rather than
+   being silently destroyed. That is what would have happened with the more obvious approach of
+   nesting a second `Modal.open()` inside the first, since this codebase's modal is a single-slot
+   singleton that tears down whatever's currently open before showing something new (the same reason
+   `confirmDialog` is deliberately its own overlay, not a nested modal) — caught and redesigned before
+   this ever shipped, not after. Finally, added and invited a renter directly from inside a historical
+   lease's detail view, confirming that "granting historical access after the fact" case works too.
+8. **The seed data actually demonstrates what it claims to.** While wiring up the demo renter for the
+   checks above, found that `seed.js`'s sample "shared" lease-agreement documents weren't actually
+   shared under the current sharing model — they only set the old `is_shared_with_tenant` flag, which
+   the renter portal stopped reading once sharing moved to explicit `document_shares` rows. Fixed
+   `seed.js` to insert real shares, then confirmed — over real HTTP calls, not by reading the seed
+   code — that the demo renter can log in and actually see the lease-agreement document the seed
+   data claims to share with them.
+9. **No new console/page errors** were observed in any of the above, checked by listening for both
+   for the duration of each run.
 
 ---
 
-## 7. Security notes
+## 8. Security notes
 
 - Passwords are hashed with Node's built-in `scrypt` (random salt per password, timing-safe
-  comparison) — no plaintext, no reversible encoding.
+  comparison) — no plaintext, no reversible encoding. Renter passwords go through the exact same
+  `scrypt` helper — there's no separate, weaker password path for renters.
 - Sessions are random 32-byte tokens stored server-side (not JWTs) with a 30-day expiry, sent as an
   `HttpOnly`, `SameSite=Lax` cookie so client-side JavaScript can't read it and it isn't sent
   cross-site. The cookie also gets the `Secure` flag automatically once `APP_BASE_URL` is an
   `https://` URL (see the deploy note below) — it deliberately does *not* set `Secure` when you're
   just running this on `http://localhost`, because browsers would silently drop the cookie
   entirely and you'd never be able to sign in.
+- Renter sessions are entirely separate from owner sessions — their own `renter_sessions` table,
+  their own `renter_session` cookie (distinct from the owner's), with the same `HttpOnly`/
+  `SameSite=Lax`/conditional-`Secure` treatment. That separation means a renter session can never be
+  mistaken for an owner session even if a route accidentally ran the wrong check, and it lets an
+  owner and a renter be signed in from the same browser at once without clobbering each other's
+  cookie. Invite, email-verification, and password-reset links are single-use tokens in their own
+  table (`renter_tokens`), each purpose with its own expiry (30 minutes to 14 days depending on
+  which); issuing a new one immediately invalidates any earlier unused one of the same purpose, so
+  only the most recently sent link ever works.
 - Every write to money, leases, and archival/deletion actions is recorded in an append-only audit
   log (`audit_log` table: who, what, before/after, when) — nothing here is "fire and forget."
   There's no UI to browse it yet, but the data is there (`SELECT * FROM audit_log ORDER BY id DESC`).
@@ -491,7 +783,7 @@ own credentials.
   and written to `data/` with `0600` permissions — never hard-coded, never checked into version
   control (see `.gitignore`).
 - Every property/financial/tenant-scoped route checks that the resource actually belongs to the
-  signed-in owner before returning anything (tested — see §6's "data isolation" line).
+  signed-in owner before returning anything (tested — see §7's "data isolation" line).
 
 ### Before you deploy this beyond your own machine
 
@@ -554,7 +846,7 @@ See `server/lib/storageStatus.js`.
 **2. HTTPS.** Serve the app over HTTPS and set `APP_BASE_URL=https://your-real-domain.com` — this is
 also what turns on the `Secure` cookie flag mentioned above.
 
-**You should also** read §4 and connect a real payment provider before sending a real tenant a real
+**You should also** read §5 and connect a real payment provider before sending a real tenant a real
 payment link — right now, no real money can move through this app at all, by design.
 
 ### Persistence verification, step by step
@@ -578,7 +870,7 @@ persistent disk instead of its own folder) already existed before this round; wh
 that the app now **detects and loudly reports** the unsafe default instead of failing silently: a
 boot-time console warning, a permanent red banner in the app itself (every screen, before anyone's
 even signed in), and an unauthenticated `GET /api/system-status` check — plus the save-lifecycle UX
-in §6 (visible Saving/Saved states, inline errors that preserve your input, a warning before
+in §7 (visible Saving/Saved states, inline errors that preserve your input, a warning before
 leaving unsaved changes) so that if a save ever fails for *any* reason, including a future one, it
 fails loudly on screen rather than looking like it worked.
 
@@ -616,24 +908,38 @@ check it's still there. That's the one step in the original ask that only you ca
 
 ---
 
-## 8. Project layout
+## 9. Project layout
 
 ```
 server/
   db.js                  schema + additive migrations (schema_meta.version tracked)
   seed.js                sample-data generator (npm run seed)
   lib/                   money/date helpers, rent-status logic, auth, and:
-                            paymentProvider.js  mock payment processor (§4)
-                            bankProvider.js     real Plaid REST client (§5)
-                            storageStatus.js    ephemeral-host/misconfigured-persistence detection (§7)
+                            paymentProvider.js  mock payment processor (§5)
+                            bankProvider.js     real Plaid REST client (§6)
+                            storageStatus.js    ephemeral-host/misconfigured-persistence detection (§8)
+                            renterAuth.js       renter session/token issuance — separate from owner
+                                                  sessions by design (§8)
+                            renters.js          renter/lease-renter data access, incl. what makes a
+                                                  renter "Active" vs "Not invited" (§4)
+                            renterAccess.js     what a signed-in renter may see (documents, charges) —
+                                                  the enforced source of truth for sharing (§4)
+                            pdf.js              zero-dependency PDF writer used for statements (§4/§7)
+                            statements.js       statement generation/PDF-rendering pipeline (§4/§7)
   routes/                one file per resource (properties, leases, financials, tenantPortal,
-                            bankAccounts, bankConnections, paymentLinks, systemStatus, …)
+                            bankAccounts, bankConnections, paymentLinks, systemStatus, …), plus:
+                            renterAuth.js       renter sign-up/login/invite-accept + tokens (§4)
+                            renterManagement.js owner-facing add/invite/remove-renter endpoints (§4)
+                            renterPortal.js     the signed-in renter's own API — balance, documents,
+                                                  maintenance, statements (§4)
+                            statements.js       generate/list/share/email/delete statements (§4/§7)
 public/
   index.html + js/       owner-facing single-page app (hash-based routing, no build step)
                             components.js  shared UI primitives (Modal/Toast/PhotoPicker/…)
                             views/bankAccounts.js  Bank Accounts page + per-property section,
                               including the Plaid Link browser flow
-  tenant.html + tenant.js  tenant portal (separate, deliberately smaller, page)
+  tenant.html + tenant.js  the payment-link surface (`/pay/link/:token`) — no account, one-off (§2)
+  renter.html + renter.js  the renter portal (`/renter`) — full renter accounts, sign-in required (§4)
 test/
   unit.test.js           pure logic: money, dates, rent-status
   integration.test.js    full HTTP flows against a real (temp) database
@@ -644,6 +950,10 @@ test/
   apiClient.test.js      public/js/api.js's timeout/error classification, against a real server
   photoPicker.test.js    photo picker's HEIC-detection/usable-file pure logic
   formSave.test.js       shared save-lifecycle error-message classification (describeApiError)
+  renterPortal.test.js   renter accounts: invite/accept, sign-in, merge, portal-visible data (§4/§7)
+  statements.test.js     statement generation math and the PDF-rendering pipeline (§4/§7)
+  statementsRoutes.test.js  owner-facing statement routes: generate/list/share/email/delete (§7)
+  pdf.test.js            the PDF writer itself, including the encoding bug it caught (§7)
 ```
 
 No bundler, no framework, no build step — edit a `.js` file under `public/` and reload the page.

@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const { DatabaseSync } = require('node:sqlite');
+const { findOrCreateRenter } = require('./lib/renters');
 
 // We use Node's built-in SQLite (available natively since Node 22.5, no
 // npm install required) as a real relational database with real tables,
@@ -564,32 +565,20 @@ const MIGRATIONS = [
       db.exec('ALTER TABLE leases ADD COLUMN renter_backfilled_at TEXT');
     }
 
-    const findRenterByEmail = db.prepare('SELECT * FROM renters WHERE owner_id = ? AND email IS NOT NULL AND lower(email) = lower(?) LIMIT 1');
-    const insertRenter = db.prepare('INSERT INTO renters (owner_id, name, email, phone) VALUES (?, ?, ?, ?)');
     const linkRenter = db.prepare('INSERT OR IGNORE INTO lease_renters (lease_id, renter_id, role) VALUES (?, ?, ?)');
-
-    function findOrCreateRenter(ownerId, name, email, phone) {
-      const cleanEmail = email ? String(email).trim().toLowerCase() : null;
-      if (cleanEmail) {
-        const existing = findRenterByEmail.get(ownerId, cleanEmail);
-        if (existing) return existing.id;
-      }
-      const result = insertRenter.run(ownerId, name, cleanEmail, phone || null);
-      return result.lastInsertRowid;
-    }
 
     const leases = db.prepare("SELECT * FROM leases WHERE renter_backfilled_at IS NULL").all();
     for (const lease of leases) {
       const property = db.prepare('SELECT owner_id FROM properties WHERE id = ?').get(lease.property_id);
       if (property && lease.tenant_name && lease.tenant_name.trim()) {
-        const primaryId = findOrCreateRenter(property.owner_id, lease.tenant_name.trim(), lease.tenant_email, lease.tenant_phone);
-        linkRenter.run(lease.id, primaryId, 'primary');
+        const primary = findOrCreateRenter(db, property.owner_id, { name: lease.tenant_name.trim(), email: lease.tenant_email, phone: lease.tenant_phone });
+        linkRenter.run(lease.id, primary.id, 'primary');
         if (lease.co_tenant_name && lease.co_tenant_name.trim()) {
           // Co-tenants have no separate email/phone columns on leases today,
           // so each backfills to its own fresh identity unless a later
           // invitation links it to something more specific.
-          const coId = findOrCreateRenter(property.owner_id, lease.co_tenant_name.trim(), null, null);
-          linkRenter.run(lease.id, coId, 'co_renter');
+          const co = findOrCreateRenter(db, property.owner_id, { name: lease.co_tenant_name.trim(), email: null, phone: null });
+          linkRenter.run(lease.id, co.id, 'co_renter');
         }
       }
       db.prepare("UPDATE leases SET renter_backfilled_at = datetime('now') WHERE id = ?").run(lease.id);

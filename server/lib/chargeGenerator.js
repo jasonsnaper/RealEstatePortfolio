@@ -1,5 +1,23 @@
 const { clampedDate, addDays, addMonths, compareDates, todayInTimezone } = require('./dates');
 
+/**
+ * Whether a charge period genuinely falls within a lease's tenancy, for
+ * display purposes. ensureChargesGenerated backfills every elapsed period
+ * for an ACTIVE lease up through today, including when its start date is
+ * long in the past. If an owner later ends that lease with a backdated end
+ * date (recording a move-out that already happened), whatever was already
+ * generated for periods after the real move-out is left behind in the
+ * charges table — there was no way to know the end date before it was set.
+ * Anything presenting "what this lease owes" should exclude those
+ * post-move-out periods for an ended lease, since they represent rent for a
+ * time when, per the owner's own end date, no tenancy existed. An active
+ * lease (no end date yet) always passes.
+ */
+function periodWithinLeaseTerm(lease, periodStart) {
+  if (lease.status !== 'ended' || !lease.end_date) return true;
+  return compareDates(periodStart, lease.end_date) <= 0;
+}
+
 /** The rent in effect for a given calendar date, from the lease's effective-dated history. */
 function rentEffectiveOn(rentHistoryRows, dateStr) {
   // rentHistoryRows: [{ rent_cents, effective_date }], any order.
@@ -80,4 +98,54 @@ function ensureChargesGenerated(db, leaseId, timezone) {
   return created;
 }
 
-module.exports = { rentEffectiveOn, computePeriodsToCharge, ensureChargesGenerated };
+/**
+ * Create (idempotently) the charge for the NEXT period after the latest one
+ * that already exists for this lease — i.e. lets a renter pay next month's
+ * rent before that period has even started, rather than waiting for
+ * ensureChargesGenerated's normal "up through today" schedule to reach it.
+ *
+ * Returns the new (or already-existing) charge row, or null if there's
+ * nothing sensible to advance to: the lease isn't active, the next period
+ * would start after the lease's end date, or rent isn't yet in effect for
+ * that period (e.g. a lease with no rent history at all, which shouldn't
+ * happen in practice but is checked rather than assumed).
+ *
+ * Deliberately reuses the exact same INSERT OR IGNORE + unique-constraint
+ * pattern as ensureChargesGenerated, so calling this and then a normal
+ * "generate up through today" pass later can never create two charges for
+ * the same period or disagree about one that already exists.
+ */
+function ensureNextPeriodCharge(db, leaseId) {
+  const lease = db.prepare('SELECT * FROM leases WHERE id = ?').get(leaseId);
+  if (!lease || lease.status !== 'active') return null;
+
+  const latest = db.prepare('SELECT * FROM charges WHERE lease_id = ? ORDER BY period_start DESC LIMIT 1').get(leaseId);
+  const today = todayInTimezone(
+    (db.prepare('SELECT timezone FROM properties WHERE id = ?').get(lease.property_id) || {}).timezone || 'America/Denver'
+  );
+  // Advance from whichever is later: the period after the latest existing
+  // charge, or the period containing today (covers a lease with no charges
+  // yet at all — advancing should still mean "the period after this one").
+  const basisStart = latest ? latest.period_start : today;
+  const [y, m] = basisStart.split('-').map(Number);
+  const nextPeriodStart = addMonths(`${y}-${String(m).padStart(2, '0')}-01`, 1);
+
+  if (lease.end_date && compareDates(nextPeriodStart, lease.end_date) > 0) return null;
+
+  const periodEnd = addDays(addMonths(nextPeriodStart.slice(0, 8) + '01', 1), -1);
+  const dueDate = clampedDate(Number(nextPeriodStart.slice(0, 4)), Number(nextPeriodStart.slice(5, 7)), lease.due_day);
+  const lateDate = addDays(dueDate, lease.late_after_days);
+
+  const rentHistory = db.prepare('SELECT rent_cents, effective_date FROM lease_rent_history WHERE lease_id = ?').all(leaseId);
+  const rentCents = rentEffectiveOn(rentHistory, nextPeriodStart);
+  if (rentCents === null) return null;
+
+  db.prepare(`
+    INSERT OR IGNORE INTO charges (lease_id, period_start, period_end, due_date, late_date, amount_cents)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(leaseId, nextPeriodStart, periodEnd, dueDate, lateDate, rentCents);
+
+  return db.prepare('SELECT * FROM charges WHERE lease_id = ? AND period_start = ?').get(leaseId, nextPeriodStart);
+}
+
+module.exports = { rentEffectiveOn, computePeriodsToCharge, ensureChargesGenerated, ensureNextPeriodCharge, periodWithinLeaseTerm };

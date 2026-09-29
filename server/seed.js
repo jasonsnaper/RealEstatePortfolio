@@ -50,6 +50,11 @@ const DEMO_OWNER_NAME = 'Demo Owner';
 const DEMO_OWNER_EMAIL = 'demo@example.com';
 const DEMO_OWNER_PASSWORD = 'password123';
 
+// A real, already-active renter-portal login (Jordan Alvarez, the tenant on
+// Maple Street Duplex — see createDemoRenter below), so the renter portal is
+// explorable immediately too, not just the owner side.
+const DEMO_RENTER_PASSWORD = 'password123';
+
 let TODAY; // set once main() knows the timezone; used by the clamp() helper below
 
 function imageDataUrl(filename) {
@@ -150,13 +155,44 @@ function addPhoto(db, propertyId, { image, caption, album, takenAt, groupId, rol
   `).run(propertyId, filename, caption || null, album || 'general', groupId || null, role || null, takenAt || null);
 }
 
-function addDocument(db, propertyId, { text, filename, category, expirationDate, sharedWithTenant }) {
+// shareWithLeaseId (optional): a lease id to share this document with under
+// the CURRENT sharing model (server/routes/documents.js — an explicit
+// document_shares row, not the legacy is_shared_with_tenant boolean). Still
+// sets is_shared_with_tenant too, matching what the real upload route does
+// for cosmetic/legacy-reader consistency, but that column alone no longer
+// makes anything visible in the renter portal (renterAccess.js's
+// documentsVisibleForLease requires an actual document_shares row) — this
+// used to be sharedWithTenant: true/false here, which quietly stopped
+// sharing anything with the sample tenants the moment the sharing model was
+// reworked to be explicit. Writing the document_shares row directly (like
+// every other seed table) keeps this in sync with that rework.
+function addDocument(db, propertyId, { text, filename, category, expirationDate, shareWithLeaseId }) {
   const destDir = path.join(UPLOADS_DIR, 'properties', String(propertyId), 'documents');
   const savedName = saveBase64Document(textDocDataUrl(text), destDir, 'seed');
-  db.prepare(`
+  const result = db.prepare(`
     INSERT INTO documents (property_id, file_path, filename, category, expiration_date, is_shared_with_tenant)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(propertyId, savedName, filename, category || null, expirationDate || null, sharedWithTenant ? 1 : 0);
+  `).run(propertyId, savedName, filename, category || null, expirationDate || null, shareWithLeaseId ? 1 : 0);
+  if (shareWithLeaseId) {
+    db.prepare('INSERT INTO document_shares (document_id, lease_id) VALUES (?, ?)').run(result.lastInsertRowid, shareWithLeaseId);
+  }
+}
+
+// Gives one seeded lease a ready-to-use renter-portal login, separate from
+// the owner's own account — otherwise trying the renter portal from a fresh
+// install means first adding a renter by hand and clicking through your own
+// invite link. Mirrors exactly what accepting a real invite leaves behind
+// (password_hash set, email_verified_at populated, linked via lease_renters
+// — see routes/renterAuth.js's accept-invite handler) rather than a
+// shortcut state the real product flow could never produce.
+function createDemoRenter(db, ownerId, leaseId, { name, email, role }) {
+  const result = db.prepare(`
+    INSERT INTO renters (owner_id, name, email, password_hash, email_verified_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+  `).run(ownerId, name, email, hashPassword(DEMO_RENTER_PASSWORD));
+  const renterId = result.lastInsertRowid;
+  db.prepare('INSERT INTO lease_renters (lease_id, renter_id, role) VALUES (?, ?, ?)').run(leaseId, renterId, role || 'primary');
+  return renterId;
 }
 
 function addMaintenance(db, propertyId, opts) {
@@ -244,6 +280,7 @@ function seedMapleStreetDuplex(db, ownerId, sharedAccountId) {
   });
   changeRent(db, leaseId, 1850, rentBumpDate);
   ensureChargesGenerated(db, leaseId, TIMEZONE);
+  createDemoRenter(db, ownerId, leaseId, { name: 'Jordan Alvarez', email: 'jordan.alvarez@example.com', role: 'primary' });
 
   // A model tenant: every period paid in full, a couple of days after due.
   for (const charge of getCharges(db, leaseId)) {
@@ -283,7 +320,7 @@ function seedMapleStreetDuplex(db, ownerId, sharedAccountId) {
 
   addDocument(db, property.id, {
     text: 'SAMPLE LEASE AGREEMENT (for demonstration purposes only)\n\nMaple Street Duplex — 123 Maple St, Denver, CO 80202\nTenant: Jordan Alvarez\n\nThis file stands in for a real signed lease so you can see how documents work in this app.',
-    filename: 'Lease Agreement — Maple St Duplex.txt', category: 'lease', sharedWithTenant: true,
+    filename: 'Lease Agreement — Maple St Duplex.txt', category: 'lease', shareWithLeaseId: leaseId,
   });
   addDocument(db, property.id, {
     text: 'SAMPLE INSURANCE DECLARATION (for demonstration purposes only)\n\nHomeowners policy placeholder — replace with your real declarations page.',
@@ -354,7 +391,7 @@ function seedBirchwoodBungalow(db, ownerId, sharedAccountId) {
 
   addDocument(db, property.id, {
     text: 'SAMPLE LEASE AGREEMENT (for demonstration purposes only)\n\nBirchwood Bungalow — 48 Birchwood Ln, Denver, CO 80207\nTenant: Riley Chen',
-    filename: 'Lease Agreement — Birchwood Bungalow.txt', category: 'lease', sharedWithTenant: true,
+    filename: 'Lease Agreement — Birchwood Bungalow.txt', category: 'lease', shareWithLeaseId: leaseId,
   });
 
   return property;
@@ -466,6 +503,11 @@ function main() {
   } else {
     console.log('Added to your existing account — sign in as usual to see them.');
   }
+  console.log('');
+  console.log('The Maple Street Duplex tenant also has an active renter-portal login, so you can see that side too:');
+  console.log('  Renter portal: /renter');
+  console.log('  Email:         jordan.alvarez@example.com');
+  console.log(`  Password:      ${DEMO_RENTER_PASSWORD}`);
   console.log('');
   console.log('Every sample property is badged "sample" in the app, and can be removed in one step from the');
   console.log('"Remove sample data" banner on the dashboard once you are ready to add your own properties.');

@@ -398,7 +398,7 @@ async function loadMaintenance() {
         '<span class="badge">' + (PRIORITY_LABEL[r.priority] || r.priority) + '</span>' +
       '</div>' +
       (r.description ? '<p style="color:var(--ink-soft);">' + escapeHtml(r.description) + '</p>' : '') +
-      '<p style="font-size:13px;color:var(--ink-faint);">Status: ' + escapeHtml(r.status) + ' · Submitted ' + formatDate(r.createdAt) +
+      '<p style="font-size:13px;color:var(--ink-faint);">Status: ' + escapeHtml(r.status) + ' · Submitted ' + formatDateTime(r.createdAt) +
         (r.scheduledDate ? ' · Scheduled ' + formatDateShort(r.scheduledDate) : '') +
         (r.completedDate ? ' · Completed ' + formatDateShort(r.completedDate) : '') + '</p>' +
       (r.photos.length ? '<div class="photo-grid">' + r.photos.map((p) => '<div class="photo-tile"><img src="' + p.url + '" loading="lazy"></div>').join('') + '</div>' : '') +

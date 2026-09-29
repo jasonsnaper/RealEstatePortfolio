@@ -504,25 +504,40 @@ const PropertyView = (function () {
 
   // ---- Documents ----
   const DOC_CATEGORIES = ['lease', 'lease_amendment', 'insurance', 'tax', 'inspection', 'invoice', 'receipt', 'mortgage_statement', 'other'];
+
+  // Shared by the upload modal and the "Manage sharing" modal: one lease per
+  // checkbox (a renter-only share — someone kept visible individually after
+  // their co-renter moved out — has no checkbox here and is called out
+  // separately in whichever modal renders it, left untouched). A shared
+  // class rather than per-modal ids so the same query works in either.
+  function leaseShareCheckboxesHtml(leases, checkedLeaseIds) {
+    if (leases.length === 0) return '<p class="field-hint">No leases on this property yet.</p>';
+    return leases.map((l) => (
+      '<div class="checkbox-field"><input type="checkbox" class="share-lease-checkbox" id="share-lease-' + l.id + '" value="' + l.id + '"' + (checkedLeaseIds.includes(l.id) ? ' checked' : '') + '>' +
+      '<label for="share-lease-' + l.id + '">' + escapeHtml(l.tenantName) + (l.status === 'ended' ? ' (ended)' : '') + '</label></div>'
+    )).join('');
+  }
+
   async function renderDocuments(p, container) {
-    const docs = await Api.get('/api/properties/' + propertyId + '/documents');
+    const [docs, leases] = await Promise.all([
+      Api.get('/api/properties/' + propertyId + '/documents'),
+      Api.get('/api/properties/' + propertyId + '/leases'),
+    ]);
     container.innerHTML =
       '<div class="section-heading"><h2>Documents</h2><button class="btn small" id="add-doc-btn">Add document</button></div>' +
       (docs.length === 0 ? '<p class="field-hint">No documents yet.</p>' :
-        '<div class="table-wrap"><table><thead><tr><th>File</th><th>Category</th><th>Expires</th><th>Tenant access</th><th></th></tr></thead><tbody>' +
+        '<div class="table-wrap"><table><thead><tr><th>File</th><th>Category</th><th>Expires</th><th>Shared with</th><th></th></tr></thead><tbody>' +
         docs.map((d) => (
-          '<tr><td><a href="' + d.url + '" target="_blank">' + escapeHtml(d.filename) + '</a></td>' +
+          '<tr><td><a href="' + d.url + '" target="_blank">' + escapeHtml(d.filename) + '</a>' +
+            (d.needsSharingReview ? ' <span class="badge warn" title="Sharing carried over from an older version of this app — please double-check it">Review sharing</span>' : '') + '</td>' +
           '<td>' + d.category.replace('_', ' ') + '</td>' +
           '<td>' + (d.expirationDate ? formatDateShort(d.expirationDate) : '—') + '</td>' +
-          '<td>' + (d.isSharedWithTenant ? '<span class="badge shared">shared</span>' : 'Private') + '</td>' +
-          '<td><button class="btn small" data-share="' + d.id + '" data-shared="' + d.isSharedWithTenant + '">' + (d.isSharedWithTenant ? 'Unshare' : 'Share') + '</button> <button class="btn small danger" data-del="' + d.id + '">Delete</button></td></tr>'
+          '<td>' + (d.shares.length ? d.shares.map((s) => escapeHtml(s.label)).join(', ') : 'Private') + '</td>' +
+          '<td class="btn-row"><button class="btn small" data-manage-share="' + d.id + '">Manage sharing</button> <button class="btn small danger" data-del="' + d.id + '">Delete</button></td></tr>'
         )).join('') + '</tbody></table></div>');
-    qs('#add-doc-btn', container).addEventListener('click', () => openAddDocumentModal());
-    qsa('[data-share]', container).forEach((btn) => wireAction(btn, async () => {
-      const nowShared = btn.dataset.shared !== 'true';
-      await Api.put('/api/documents/' + btn.dataset.share, { isSharedWithTenant: nowShared });
-      Toast.show(nowShared ? 'Document shared with tenant.' : 'Document unshared.', 'success');
-      renderTab(propertyCache);
+    qs('#add-doc-btn', container).addEventListener('click', () => openAddDocumentModal(leases));
+    qsa('[data-manage-share]', container).forEach((btn) => btn.addEventListener('click', () => {
+      openManageSharingModal(docs.find((d) => String(d.id) === btn.dataset.manageShare), leases);
     }));
     qsa('[data-del]', container).forEach((btn) => wireAction(btn, async () => {
       if (!(await confirmDialog('Delete this document?', 'Delete'))) return;
@@ -531,13 +546,13 @@ const PropertyView = (function () {
       renderTab(propertyCache);
     }, { busyLabel: 'Deleting…' }));
   }
-  function openAddDocumentModal() {
+  function openAddDocumentModal(leases) {
     const modal = Modal.open(
       '<h2>Add document</h2>' +
       '<div class="field"><label>File</label><input type="file" id="doc-file"></div>' +
       '<div class="field"><label>Category</label><select id="doc-category">' + DOC_CATEGORIES.map((c) => '<option value="' + c + '">' + c.replace('_', ' ') + '</option>').join('') + '</select></div>' +
       '<div class="field"><label>Expiration date (optional)</label><input type="date" id="doc-expiration"></div>' +
-      '<div class="checkbox-field"><input type="checkbox" id="doc-shared"><label for="doc-shared">Share with tenant in their portal</label></div>' +
+      '<div class="field"><label>Share with</label>' + leaseShareCheckboxesHtml(leases, []) + '</div>' +
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Add document</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
@@ -545,12 +560,37 @@ const PropertyView = (function () {
       const file = qs('#doc-file', modal).files[0];
       if (!file) throw new Error('Choose a file first.');
       const dataUrl = await readFileAsDataUrl(file);
+      const shareWithLeaseIds = qsa('.share-lease-checkbox', modal).filter((el) => el.checked).map((el) => Number(el.value));
       await Api.post('/api/properties/' + propertyId + '/documents', {
         dataUrl, filename: file.name, category: qs('#doc-category', modal).value,
-        expirationDate: qs('#doc-expiration', modal).value || null, isSharedWithTenant: qs('#doc-shared', modal).checked,
+        expirationDate: qs('#doc-expiration', modal).value || null, shareWithLeaseIds,
       });
       renderTab(propertyCache);
     }, { savingLabel: 'Uploading…', savedMessage: 'Document added.' });
+  }
+  // Replaces the whole share list for one document. A pre-existing
+  // renter-only share (kept visible to just one person, not the picker's
+  // unit) is shown for context but left exactly as-is on save — this picker
+  // only ever edits the lease-level half of the share set.
+  function openManageSharingModal(doc, leases) {
+    const sharedLeaseIds = doc.shares.filter((s) => s.leaseId).map((s) => s.leaseId);
+    const renterOnlyShares = doc.shares.filter((s) => !s.leaseId);
+    const modal = Modal.open(
+      '<h2>Manage sharing</h2>' +
+      '<p class="field-hint">' + escapeHtml(doc.filename) + ' — choose which lease(s) can see this document in their renter portal.</p>' +
+      leaseShareCheckboxesHtml(leases, sharedLeaseIds) +
+      (renterOnlyShares.length
+        ? '<p class="field-hint" style="margin-top:10px;">Also individually shared with ' + renterOnlyShares.map((s) => escapeHtml(s.label)).join(', ') + ' — unaffected by the checkboxes above.</p>'
+        : '') +
+      '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Save sharing</button></div>'
+    );
+    modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
+      const leaseIds = qsa('.share-lease-checkbox', modal).filter((el) => el.checked).map((el) => Number(el.value));
+      const renterIds = renterOnlyShares.map((s) => s.renterId);
+      await Api.put('/api/documents/' + doc.id + '/shares', { leaseIds, renterIds });
+      renderTab(propertyCache);
+    }, { savedMessage: 'Sharing updated.' });
   }
 
   // ---- Transactions ----
@@ -749,6 +789,10 @@ const PropertyView = (function () {
       qs('#add-lease-btn', container).addEventListener('click', () => openAddLeaseModal());
       return;
     }
+    const [renters, statements] = await Promise.all([
+      Api.get('/api/leases/' + lease.id + '/renters'),
+      Api.get('/api/leases/' + lease.id + '/statements'),
+    ]);
     container.innerHTML =
       '<div class="section-heading"><h2>Tenant & lease</h2><div class="btn-row">' +
         '<button class="btn small" id="edit-lease-btn">Edit lease</button>' +
@@ -771,6 +815,7 @@ const PropertyView = (function () {
       '</div>' +
       (lease.emergencyContact ? '<p><strong>Emergency contact:</strong> ' + escapeHtml(lease.emergencyContact) + '</p>' : '') +
       (lease.ownerNotes ? '<div class="banner warn"><strong>Private owner notes</strong> (never visible to tenant): ' + escapeHtml(lease.ownerNotes) + '</div>' : '') +
+      rentersSectionHtml(renters) +
       '<h3 style="font-size:15px;margin:22px 0 10px;">Rent history</h3>' +
       lease.rentHistory.map((h) => '<div class="list-row"><span>Effective ' + formatDateShort(h.effectiveDate) + '</span><span class="money">' + centsToDisplay(h.rentCents) + '</span></div>').join('') +
       '<h3 style="font-size:15px;margin:22px 0 10px;">Charges</h3>' +
@@ -779,7 +824,8 @@ const PropertyView = (function () {
         '<tr><td>' + formatDateShort(c.periodStart) + ' – ' + formatDateShort(c.periodEnd) + '</td><td>' + formatDateShort(c.dueDate) + '</td><td>' + formatDateShort(c.lateDate) + '</td>' +
         '<td class="money">' + centsToDisplay(c.amountCents) + '</td><td class="money">' + centsToDisplay(c.paidCents) + '</td><td>' + statusPill(c.status) + '</td>' +
         '<td><button class="btn small" data-record-charge="' + c.id + '">Record payment</button></td></tr>'
-      )).join('') + '</tbody></table></div>';
+      )).join('') + '</tbody></table></div>' +
+      statementsSectionHtml(statements);
 
     qs('#edit-lease-btn', container).addEventListener('click', () => openEditLeaseModal(lease));
     qs('#rent-change-btn', container).addEventListener('click', () => openRentChangeModal(lease));
@@ -788,6 +834,181 @@ const PropertyView = (function () {
       const charge = lease.charges.find((c) => String(c.id) === btn.dataset.recordCharge);
       openRecordPaymentModal(charge);
     }));
+
+    // -- Renters (portal access) / Payment statements -- shared wiring (see
+    // wireRentersSection/wireStatementsSection below) so the same sections
+    // work identically here and in the Historical Tenants lease-detail modal
+    // — a renter can still need portal access or a statement after move-out
+    // (see openLeaseDetailModal's comment), so neither section is specific
+    // to an active lease.
+    wireRentersSection(container, lease, renters, () => renderTab(propertyCache));
+    wireStatementsSection(container, lease, () => renderTab(propertyCache));
+  }
+
+  // ---- Renters (portal access) ----
+  // `scope` is whichever element contains the rendered rentersSectionHtml —
+  // the Tenant & Lease tab's container, or a Historical Tenants lease-detail
+  // modal. `onChange` repaints wherever that scope lives after a mutation
+  // (renderTab(propertyCache) for the tab; a modal repaint for the modal) —
+  // see renderTenantLease and openLeaseDetailModal for the two call sites.
+  function wireRentersSection(scope, lease, renters, onChange) {
+    qs('#add-renter-btn', scope).addEventListener('click', () => openAddRenterModal(lease, renters, onChange));
+    qsa('[data-invite-renter]', scope).forEach((btn) => wireAction(btn, async () => {
+      const renter = renters.find((r) => String(r.id) === btn.dataset.inviteRenter);
+      const link = await Api.post('/api/leases/' + lease.id + '/renters/' + btn.dataset.inviteRenter + '/invite', {});
+      renderInviteLinkModal(renter, link);
+    }, { busyLabel: 'Generating…' }));
+    qsa('[data-remove-renter]', scope).forEach((btn) => wireAction(btn, async () => {
+      if (!(await confirmDialog('Remove this renter from the lease? They will lose access to this lease in the portal — their account itself is not deleted.', 'Remove'))) return;
+      await Api.del('/api/leases/' + lease.id + '/renters/' + btn.dataset.removeRenter);
+      Toast.show('Renter removed from lease.', 'success');
+      onChange();
+    }, { busyLabel: 'Removing…' }));
+  }
+
+  // ---- Payment statements ----
+  // Same shared-wiring shape as wireRentersSection above.
+  function wireStatementsSection(scope, lease, onChange) {
+    qs('#generate-statement-btn', scope).addEventListener('click', () => openGenerateStatementModal(lease, onChange));
+    qsa('[data-toggle-share-statement]', scope).forEach((btn) => wireAction(btn, async () => {
+      const nowShared = btn.dataset.shared !== 'true';
+      await Api.post('/api/statements/' + btn.dataset.toggleShareStatement + '/share', { shared: nowShared });
+      Toast.show(nowShared ? 'Statement shared with renter.' : 'Statement unshared.', 'success');
+      onChange();
+    }));
+    qsa('[data-email-statement]', scope).forEach((btn) => wireAction(btn, async () => {
+      const result = await Api.post('/api/statements/' + btn.dataset.emailStatement + '/email', {});
+      Toast.show('Statement "emailed" (simulated) to ' + result.to + ' — no real email provider is connected yet, see the README.', 'success');
+      onChange();
+    }, { busyLabel: 'Sending…' }));
+    qsa('[data-delete-statement]', scope).forEach((btn) => wireAction(btn, async () => {
+      if (!(await confirmDialog('Delete this statement? This cannot be undone.', 'Delete'))) return;
+      await Api.del('/api/statements/' + btn.dataset.deleteStatement);
+      Toast.show('Statement deleted.', 'success');
+      onChange();
+    }, { busyLabel: 'Deleting…' }));
+  }
+  function rentersSectionHtml(renters) {
+    return (
+      '<h3 style="font-size:15px;margin:22px 0 10px;">Renters (portal access)</h3>' +
+      '<div class="section-heading" style="margin-bottom:10px;"><p class="field-hint" style="margin:0;">Separate from the tenant name above — add a renter here to give them their own sign-in to the renter portal.</p><button class="btn small" id="add-renter-btn">Add renter</button></div>' +
+      (renters.length === 0 ? '<p class="field-hint">No renters added yet.</p>' :
+        '<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Portal account</th><th></th></tr></thead><tbody>' +
+        renters.map((r) => (
+          '<tr><td>' + escapeHtml(r.name) + '</td>' +
+          '<td>' + (r.email ? escapeHtml(r.email) : '—') + '</td>' +
+          '<td>' + (r.role === 'primary' ? 'Primary' : 'Co-renter') + '</td>' +
+          '<td>' + (r.hasAccount ? '<span class="badge shared">Active</span>' : '<span class="field-hint">Not invited</span>') + '</td>' +
+          '<td class="btn-row">' +
+            (!r.hasAccount ? '<button class="btn small" data-invite-renter="' + r.id + '"' + (!r.email ? ' disabled title="Add an email first"' : '') + '>Invite</button>' : '') +
+            '<button class="btn small danger" data-remove-renter="' + r.id + '">Remove</button>' +
+          '</td></tr>'
+        )).join('') + '</tbody></table></div>')
+    );
+  }
+  function openAddRenterModal(lease, renters, onChange) {
+    const isFirst = renters.length === 0;
+    const modal = Modal.open(
+      '<h2>Add renter</h2>' +
+      '<form id="add-renter-form">' +
+        '<div class="field"><label>Name</label><input name="name" required value="' + (isFirst ? escapeHtml(lease.tenantName || '') : '') + '"></div>' +
+        '<div class="field"><label>Email</label><input name="email" type="email" value="' + (isFirst ? escapeHtml(lease.tenantEmail || '') : '') + '"><span class="field-hint">Needed to invite them to the portal — can be added later.</span></div>' +
+        '<div class="field"><label>Phone</label><input name="phone"></div>' +
+        '<div class="field"><label>Role</label><select name="role"><option value="primary"' + (isFirst ? ' selected' : '') + '>Primary</option><option value="co_renter"' + (!isFirst ? ' selected' : '') + '>Co-renter</option></select></div>' +
+        '<div class="modal-actions"><button type="button" class="btn" data-act="cancel">Cancel</button><button type="submit" class="btn primary">Add renter</button></div>' +
+      '</form>'
+    );
+    modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
+    const form = modal.querySelector('#add-renter-form');
+    wireSave(form, async () => {
+      await Api.post('/api/leases/' + lease.id + '/renters', formData(form));
+      onChange();
+    }, { savedMessage: 'Renter added.' });
+  }
+  // Same copy-link pattern as renderPaymentLinkSuccess above — no email/SMS
+  // provider is connected, so the owner copies and sends this themselves.
+  function renderInviteLinkModal(renter, link) {
+    const modal = Modal.open(
+      '<h2>Invite ' + escapeHtml(renter.name) + '</h2>' +
+      '<p class="field-hint">Share this secure link so they can set a password and sign in to the renter portal. It expires in ' + link.expiresInDays + ' days.</p>' +
+      '<div class="field"><input readonly value="' + escapeHtml(link.url) + '" id="renter-invite-link" onclick="this.select()"></div>' +
+      '<div class="banner info">No email/SMS provider is connected, so sending is manual — copy the link and send it yourself. See the README to connect a provider so this can be sent automatically.</div>' +
+      '<div class="modal-actions"><button class="btn" data-act="close">Close</button><button class="btn primary" data-act="copy">Copy link</button></div>'
+    );
+    modal.querySelector('[data-act="close"]').addEventListener('click', Modal.close);
+    const copyBtn = modal.querySelector('[data-act="copy"]');
+    const defaultLabel = copyBtn.textContent;
+    copyBtn.addEventListener('click', async () => {
+      try {
+        if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard API unavailable');
+        await navigator.clipboard.writeText(link.url);
+        copyBtn.textContent = 'Copied!';
+      } catch (e) {
+        qs('#renter-invite-link', modal).select();
+        copyBtn.textContent = 'Couldn’t copy — text selected, use Ctrl/Cmd+C';
+      }
+      setTimeout(() => { copyBtn.textContent = defaultLabel; }, 2500);
+    });
+  }
+
+  // ---- Payment statements ----
+  function statementsSectionHtml(statements) {
+    return (
+      '<div class="section-heading" style="margin-top:28px;"><h3 style="font-size:15px;">Payment statements</h3><button class="btn small" id="generate-statement-btn">Generate statement</button></div>' +
+      (statements.length === 0 ? '<p class="field-hint">No statements generated yet.</p>' :
+        '<div class="table-wrap"><table><thead><tr><th>Period</th><th>Billed</th><th>Paid</th><th>Balance</th><th>Generated</th><th>Shared</th><th></th></tr></thead><tbody>' +
+        statements.map((s) => (
+          '<tr><td>' + formatDateShort(s.rangeStart) + ' – ' + formatDateShort(s.rangeEnd) + (s.isSample ? ' <span class="badge sample">sample</span>' : '') + '</td>' +
+          '<td class="money">' + centsToDisplay(s.totals ? s.totals.billedCents : null) + '</td>' +
+          '<td class="money">' + centsToDisplay(s.totals ? s.totals.paidCents : null) + '</td>' +
+          '<td class="money">' + centsToDisplay(s.totals ? s.totals.outstandingCents : null) + '</td>' +
+          '<td>' + formatDateTime(s.createdAt) + '</td>' +
+          '<td>' + (s.sharedWithRenter ? '<span class="badge shared">Shared</span>' : 'Private') +
+            (s.emailedAt ? '<br><span class="field-hint">Emailed ' + formatDateShort(s.emailedAt.slice(0, 10)) + '</span>' : '') + '</td>' +
+          '<td class="btn-row">' +
+            '<a class="btn small" href="' + s.url + '" target="_blank" rel="noopener">Download</a>' +
+            '<button class="btn small" data-toggle-share-statement="' + s.id + '" data-shared="' + s.sharedWithRenter + '">' + (s.sharedWithRenter ? 'Unshare' : 'Share') + '</button>' +
+            '<button class="btn small" data-email-statement="' + s.id + '">Email</button>' +
+            '<button class="btn small danger" data-delete-statement="' + s.id + '">Delete</button>' +
+          '</td></tr>'
+        )).join('') + '</tbody></table></div>')
+    );
+  }
+  function openGenerateStatementModal(lease, onChange) {
+    const modal = Modal.open(
+      '<h2>Generate statement</h2>' +
+      '<div class="field"><label>Range</label><select id="stmt-range-type">' +
+        '<option value="lease_to_date">Full lease to date</option>' +
+        '<option value="month">A specific month</option>' +
+        '<option value="year">A specific year</option>' +
+        '<option value="custom">Custom date range</option>' +
+      '</select></div>' +
+      '<div class="field" id="stmt-month-field" style="display:none;"><label>Month</label><input type="month" id="stmt-month" value="' + todayStr().slice(0, 7) + '"></div>' +
+      '<div class="field" id="stmt-year-field" style="display:none;"><label>Year</label><input type="number" id="stmt-year" value="' + new Date().getFullYear() + '"></div>' +
+      '<div class="field-row" id="stmt-custom-field" style="display:none;">' +
+        '<div class="field"><label>Start date</label><input type="date" id="stmt-start"></div>' +
+        '<div class="field"><label>End date</label><input type="date" id="stmt-end"></div>' +
+      '</div>' +
+      '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Generate</button></div>'
+    );
+    modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
+    const rangeSelect = qs('#stmt-range-type', modal);
+    const updateVisibility = () => {
+      qs('#stmt-month-field', modal).style.display = rangeSelect.value === 'month' ? '' : 'none';
+      qs('#stmt-year-field', modal).style.display = rangeSelect.value === 'year' ? '' : 'none';
+      qs('#stmt-custom-field', modal).style.display = rangeSelect.value === 'custom' ? '' : 'none';
+    };
+    rangeSelect.addEventListener('change', updateVisibility);
+    updateVisibility();
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
+      const rangeType = rangeSelect.value;
+      const body = { rangeType };
+      if (rangeType === 'month') body.month = qs('#stmt-month', modal).value;
+      if (rangeType === 'year') body.year = qs('#stmt-year', modal).value;
+      if (rangeType === 'custom') { body.rangeStart = qs('#stmt-start', modal).value; body.rangeEnd = qs('#stmt-end', modal).value; }
+      await Api.post('/api/leases/' + lease.id + '/statements', body);
+      onChange();
+    }, { savedMessage: 'Statement generated.' });
   }
 
   function openAddLeaseModal() {
@@ -892,15 +1113,16 @@ const PropertyView = (function () {
   function openEndLeaseModal(lease) {
     const modal = Modal.open(
       '<h2>End lease</h2>' +
-      '<p class="field-hint">This preserves the full tenant history — charges, payments, and documents all stay intact under Historical Tenants.</p>' +
+      '<p class="field-hint">This preserves the full tenant history — charges, payments, and documents all stay intact under Historical Tenants. A closing payment statement for the whole tenancy is generated automatically (it\'s not shared with the renter until you choose to, from Payment statements below).</p>' +
       '<div class="field"><label>Move-out date</label><input type="date" id="el-date" value="' + todayStr() + '"></div>' +
       '<div class="field"><label>Deposit disposition</label><textarea id="el-disposition" placeholder="e.g. Returned $1,200 of $1,500; $300 withheld for cleaning"></textarea></div>' +
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn danger" data-act="save">End lease</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
     wireSave(modal.querySelector('[data-act="save"]'), async () => {
-      await Api.post('/api/leases/' + lease.id + '/end', { endDate: qs('#el-date', modal).value, depositDisposition: qs('#el-disposition', modal).value });
+      const result = await Api.post('/api/leases/' + lease.id + '/end', { endDate: qs('#el-date', modal).value, depositDisposition: qs('#el-disposition', modal).value });
       render(propertyId, 'tenant');
+      return result.finalStatementId ? 'Lease ended and a closing statement was generated.' : 'Lease ended.';
     }, { savedMessage: 'Lease ended.' });
   }
   function openRecordPaymentModal(charge) {
@@ -939,19 +1161,54 @@ const PropertyView = (function () {
             fact('Tenant', escapeHtml(l.tenantName)) + fact('Lease dates', formatDateRange(l.startDate, l.endDate)) +
             fact('Final rent', centsToDisplay(l.currentRentCents), true) + fact('Deposit disposition', l.depositDisposition ? escapeHtml(l.depositDisposition) : '—') +
           '</div>' +
-          '<button class="btn small" data-view-lease="' + l.id + '" style="margin-top:12px;">View full charge/payment history</button>' +
+          '<button class="btn small" data-view-lease="' + l.id + '" style="margin-top:12px;">View lease details</button>' +
+          '<div class="lease-detail"></div>' +
         '</div>'
       )).join(''));
     qsa('[data-view-lease]', container).forEach((btn) => btn.addEventListener('click', async () => {
-      const lease = await Api.get('/api/leases/' + btn.dataset.viewLease);
-      Modal.open(
-        '<h2>' + escapeHtml(lease.tenantName) + '</h2>' +
-        '<div class="table-wrap"><table><thead><tr><th>Period</th><th>Amount</th><th>Paid</th><th>Status</th></tr></thead><tbody>' +
-        lease.charges.map((c) => '<tr><td>' + formatDateShort(c.periodStart) + '</td><td class="money">' + centsToDisplay(c.amountCents) + '</td><td class="money">' + centsToDisplay(c.paidCents) + '</td><td>' + statusPill(c.status) + '</td></tr>').join('') +
-        '</tbody></table></div><div class="modal-actions"><button class="btn" data-act="close">Close</button></div>'
-      );
-      qs('[data-act="close"]').addEventListener('click', Modal.close);
+      const leaseId = btn.dataset.viewLease;
+      const slot = btn.nextElementSibling;
+      btn.remove();
+      await paintLeaseDetail(slot, leaseId);
     }));
+  }
+  async function fetchLeaseDetail(leaseId) {
+    const [lease, renters, statements] = await Promise.all([
+      Api.get('/api/leases/' + leaseId),
+      Api.get('/api/leases/' + leaseId + '/renters'),
+      Api.get('/api/leases/' + leaseId + '/statements'),
+    ]);
+    return { lease, renters, statements };
+  }
+  // Fills in one historical lease's detail inline, in place of the "View
+  // lease details" button that triggered it: charges history, plus the same
+  // Renters and Payment statements sections the active Tenant & Lease tab
+  // has. Deliberately NOT a modal: those sections can themselves open
+  // further modals (Add renter, Generate statement, the invite-link copy
+  // modal), and this app's Modal is a single-slot singleton that always
+  // tears down whatever's currently open before showing a new one (see
+  // confirmDialog's header comment, which hit this exact problem and solved
+  // it by not going through Modal at all) — nesting these sections inside a
+  // modal here would close this view out from under the owner the moment
+  // they clicked "Add renter" or "Generate statement". An ended lease still
+  // needs both sections: a renter can still need portal access purely to
+  // view their own history after moving out (the "historical access" case
+  // this whole section exists for), and the closing statement auto-generated
+  // when the lease was ended (server/routes/leases.js's POST
+  // /api/leases/:id/end) has to be reachable from *somewhere* in the owner
+  // UI, since an ended lease no longer appears in the Tenant & Lease tab.
+  async function paintLeaseDetail(slot, leaseId) {
+    const { lease, renters, statements } = await fetchLeaseDetail(leaseId);
+    slot.innerHTML =
+      '<h3 style="font-size:15px;margin:18px 0 10px;">Charges</h3>' +
+      '<div class="table-wrap"><table><thead><tr><th>Period</th><th>Amount</th><th>Paid</th><th>Status</th></tr></thead><tbody>' +
+      lease.charges.map((c) => '<tr><td>' + formatDateShort(c.periodStart) + '</td><td class="money">' + centsToDisplay(c.amountCents) + '</td><td class="money">' + centsToDisplay(c.paidCents) + '</td><td>' + statusPill(c.status) + '</td></tr>').join('') +
+      '</tbody></table></div>' +
+      rentersSectionHtml(renters) +
+      statementsSectionHtml(statements);
+    const refresh = () => paintLeaseDetail(slot, leaseId);
+    wireRentersSection(slot, lease, renters, refresh);
+    wireStatementsSection(slot, lease, refresh);
   }
 
   // ---- Maintenance ----

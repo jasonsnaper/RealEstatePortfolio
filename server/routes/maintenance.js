@@ -11,6 +11,7 @@ function serializeRequest(db, r) {
   const photos = db.prepare('SELECT * FROM maintenance_photos WHERE maintenance_request_id = ?').all(r.id);
   return {
     id: r.id,
+    leaseId: r.lease_id || null,
     title: r.title,
     description: r.description,
     priority: r.priority,
@@ -40,11 +41,17 @@ function registerMaintenanceRoutes(router, { db }) {
     const property = getOwnedPropertyOr404(db, owner.id, req.params.id);
     const b = req.body;
     if (!b.title) throw apiError(400, 'A title is required');
+    let leaseId = null;
+    if (b.leaseId) {
+      const lease = db.prepare('SELECT id FROM leases WHERE id = ? AND property_id = ?').get(b.leaseId, property.id);
+      if (!lease) throw apiError(400, 'That lease does not belong to this property');
+      leaseId = lease.id;
+    }
     const result = db.prepare(`
-      INSERT INTO maintenance_requests (property_id, title, description, priority, assigned_vendor, estimated_cost_cents, scheduled_date, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'owner')
+      INSERT INTO maintenance_requests (property_id, lease_id, title, description, priority, assigned_vendor, estimated_cost_cents, scheduled_date, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'owner')
     `).run(
-      property.id, b.title.trim(), b.description || null,
+      property.id, leaseId, b.title.trim(), b.description || null,
       PRIORITIES.includes(b.priority) ? b.priority : 'normal',
       b.assignedVendor || null, b.estimatedCost ? dollarsToCents(b.estimatedCost) : null, b.scheduledDate || null
     );

@@ -89,7 +89,14 @@ function registerTenantPortalRoutes(router, { db, appBaseUrl }) {
 
   router.get('/api/portal/:token/documents', async (req, res) => {
     const { lease } = resolveActiveLink(db, req.params.token);
-    const rows = db.prepare('SELECT * FROM documents WHERE property_id = ? AND is_shared_with_tenant = 1 ORDER BY uploaded_at DESC').all(lease.property_id);
+    // Explicit per-lease sharing (see db.js's document_shares table and
+    // server/routes/documents.js) — NOT every document ever marked shared on
+    // this property, so a document shared with one lease never leaks to a
+    // different lease's payment link just because they're at the same address.
+    const rows = db.prepare(`
+      SELECT DISTINCT d.* FROM documents d JOIN document_shares ds ON ds.document_id = d.id
+      WHERE ds.lease_id = ? ORDER BY d.uploaded_at DESC
+    `).all(lease.id);
     sendJson(res, 200, rows.map((d) => ({
       id: d.id, filename: d.filename, category: d.category,
       url: `/uploads/properties/${d.property_id}/documents/${d.file_path}?token=${req.params.token}`,

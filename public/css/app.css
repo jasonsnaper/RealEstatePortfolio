@@ -253,6 +253,14 @@ th { text-align: left; font-size: 11px; color: var(--ink-soft); font-weight: 600
 td { padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
 tr:last-child td { border-bottom: none; }
 .table-wrap { overflow-x: auto; }
+/* A wide table (many columns, money + status + action buttons) must not be
+   squeezed down to the viewport width — that just wraps every cell onto
+   several lines and can push the actions column off-screen with no visible
+   way to reach it. Let the table keep its natural content width and grow
+   past the wrapper when it needs to; the wrapper's overflow-x then scrolls
+   instead of the browser shrinking columns. min-width keeps today's
+   full-bleed look on anything wide enough not to need scrolling. */
+.table-wrap table { width: max-content; min-width: 100%; }
 
 .list-row { display: flex; justify-content: space-between; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--line); gap: 14px; }
 .list-row:last-child { border-bottom: none; }

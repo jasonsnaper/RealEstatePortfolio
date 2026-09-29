@@ -222,6 +222,34 @@ test('ending a lease preserves it as historical rather than deleting it', async 
   assert.equal(stillThere.status, 200);
 });
 
+// ensureChargesGenerated backfills every elapsed monthly period for an
+// ACTIVE lease up through today, even when its start date is long in the
+// past. Creating a lease that started two years ago therefore generates
+// ~24 months of charges immediately, all dated well after any backdated
+// end date we then set — reproducing exactly what happens in practice when
+// an owner records a move-out sometime after it actually occurred.
+test('an ended lease\'s charges list excludes periods after its end date, even though they were already generated', async () => {
+  const property = await api('POST', '/api/properties', { name: 'Backdated Move-Out House' });
+  const twoYearsAgo = `${new Date().getUTCFullYear() - 2}-01-01`;
+  const l = await api('POST', `/api/properties/${property.body.id}/leases`, { tenantName: 'Departed Tenant', startDate: twoYearsAgo, rent: '1200' });
+  assert.ok(l.body.charges.length > 12, 'test setup should have backfilled well over a year of charges');
+
+  const endedSixMonthsAgo = (() => {
+    const d = new Date();
+    d.setUTCMonth(d.getUTCMonth() - 6, 1);
+    return d.toISOString().slice(0, 10);
+  })();
+  const ended = await api('POST', `/api/leases/${l.body.id}/end`, { endDate: endedSixMonthsAgo, depositDisposition: 'Returned in full' });
+  assert.equal(ended.status, 200);
+
+  const after = await api('GET', `/api/leases/${l.body.id}`);
+  assert.equal(after.status, 200);
+  assert.ok(after.body.charges.length > 0, 'charges up through the end date should still be there');
+  for (const c of after.body.charges) {
+    assert.ok(c.periodStart <= endedSixMonthsAgo, `charge for period ${c.periodStart} is after the lease's end date ${endedSixMonthsAgo} and should not be shown`);
+  }
+});
+
 test('a bank account shared across two properties is not double-counted in portfolio cash held', async () => {
   const propB = await api('POST', '/api/properties', { name: 'Shared-Account House' });
   const account = await api('POST', '/api/bank-accounts', {
@@ -235,17 +263,23 @@ test('a bank account shared across two properties is not double-counted in portf
   assert.equal(portfolio.body.cashHeldCents, 1000000, 'shared $10,000 balance must be counted once, not once per linked property');
 });
 
-test('a document not flagged shared is invisible to the tenant portal; a shared one is visible', async () => {
+test('a document with no lease share is invisible to the tenant portal; one shared with the lease is visible', async () => {
+  // Sharing is now explicit and lease/renter-scoped (document_shares), not a
+  // single is_shared_with_tenant boolean — see server/routes/documents.js and
+  // db.js's document_shares comment. shareWithLeaseIds at upload time is the
+  // one-step "share with this lease right away" path.
   const privateDoc = await api('POST', `/api/properties/${propertyId}/documents`, {
     dataUrl: 'data:text/plain;base64,' + Buffer.from('private owner notes').toString('base64'),
-    filename: 'owner-notes.txt', category: 'other', isSharedWithTenant: false,
+    filename: 'owner-notes.txt', category: 'other',
   });
   assert.equal(privateDoc.status, 201);
+  assert.deepEqual(privateDoc.body.shares, [], 'a document uploaded with no shareWithLeaseIds must start with no shares at all');
   const sharedDoc = await api('POST', `/api/properties/${propertyId}/documents`, {
     dataUrl: 'data:application/pdf;base64,' + Buffer.from('%PDF-1.4 fake').toString('base64'),
-    filename: 'lease.pdf', category: 'lease', isSharedWithTenant: true,
+    filename: 'lease.pdf', category: 'lease', shareWithLeaseIds: [leaseId],
   });
   assert.equal(sharedDoc.status, 201);
+  assert.equal(sharedDoc.body.isSharedWithTenant, true, 'the legacy boolean should stay in sync for anything still reading it directly');
 
   const link = await api('POST', `/api/leases/${leaseId}/payment-links`);
   assert.equal(link.status, 201);

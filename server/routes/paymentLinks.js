@@ -32,6 +32,30 @@ function getOwnedLeaseOr404(db, ownerId, leaseId) {
   return lease;
 }
 
+// payment_sessions.payment_link_id is NOT NULL (every checkout session was
+// originally assumed to come from a mailed link), so the renter portal
+// (server/routes/renterPortal.js), which has no link at all, needs
+// SOMETHING to point to. Rather than loosen that constraint — this app's
+// migrations are deliberately additive-only, never a table rebuild — a
+// renter-portal checkout mints or reuses the lease's own active link under
+// the hood and hangs its session off that, exactly as if the owner had
+// generated one. The link's own charge_id is just its "as of minting" note
+// to the owner; the actual charge being paid is always whatever the caller
+// resolved independently (see both checkout routes), so passing a specific
+// `charge` here never constrains what gets paid.
+function getOrCreateActiveLinkForLease(db, lease, charge, appBaseUrl) {
+  const existing = db.prepare("SELECT * FROM payment_links WHERE lease_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1").get(lease.id);
+  if (existing && new Date(existing.expires_at + 'Z').getTime() >= Date.now()) return existing;
+
+  const crypto = require('crypto');
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + LINK_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 19);
+  const result = db.prepare(`
+    INSERT INTO payment_links (token, lease_id, charge_id, status, expires_at) VALUES (?, ?, ?, 'active', ?)
+  `).run(token, lease.id, charge.id, expiresAt);
+  return db.prepare('SELECT * FROM payment_links WHERE id = ?').get(result.lastInsertRowid);
+}
+
 function registerPaymentLinkRoutes(router, { db, appBaseUrl }) {
   router.get('/api/leases/:id/payment-links', async (req, res) => {
     const owner = requireAuth(db, req);
@@ -90,4 +114,4 @@ function registerPaymentLinkRoutes(router, { db, appBaseUrl }) {
   });
 }
 
-module.exports = { registerPaymentLinkRoutes, serializeLink };
+module.exports = { registerPaymentLinkRoutes, serializeLink, getOrCreateActiveLinkForLease };
