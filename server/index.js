@@ -3,11 +3,13 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 
-const { openDefaultDatabase } = require('./db');
+const { openDefaultDatabase, UPLOADS_DIR } = require('./db');
 const { Router, handleRequest, sendJson, parseCookies } = require('./lib/router');
 const { requireAuth } = require('./lib/helpers');
+const { warnIfStorageAtRisk } = require('./lib/storageStatus');
 
 const { registerAuthRoutes } = require('./routes/auth');
+const { registerSystemStatusRoutes } = require('./routes/systemStatus');
 const { registerPropertyRoutes } = require('./routes/properties');
 const { registerBankAccountRoutes } = require('./routes/bankAccounts');
 const { registerBankConnectionRoutes } = require('./routes/bankConnections');
@@ -25,7 +27,6 @@ const { registerWebhookRoutes } = require('./routes/webhooks');
 const { registerSampleDataRoutes } = require('./routes/sampleData');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
-const UPLOADS_DIR = path.join(PUBLIC_DIR, 'uploads');
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -53,6 +54,7 @@ function createApp({ db, port }) {
   const router = new Router();
 
   registerAuthRoutes(router, { db });
+  registerSystemStatusRoutes(router);
   registerPropertyRoutes(router, { db });
   registerBankAccountRoutes(router, { db });
   registerBankConnectionRoutes(router, { db });
@@ -182,6 +184,17 @@ function startServer(port) {
   });
   server.listen(port, () => {
     console.log(`Rental portfolio manager running at http://localhost:${port}`);
+    // Checked on every boot, not just once: DATA_DIR/UPLOADS_DIR are read at
+    // process start, so this reflects exactly what THIS running process will
+    // do the moment it restarts. See server/lib/storageStatus.js.
+    const status = warnIfStorageAtRisk();
+    if (!status.atRisk) {
+      console.log(
+        status.likelyEphemeralHost
+          ? 'Persistent storage looks configured (DATA_DIR and UPLOADS_DIR both set).'
+          : 'Running with the default local data/ and public/uploads paths (fine for localhost).'
+      );
+    }
   });
   return { server, db };
 }

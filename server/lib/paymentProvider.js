@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { DATA_DIR } = require('../db');
 
 // ---------------------------------------------------------------------------
 // Payment provider abstraction.
@@ -31,7 +32,8 @@ const path = require('path');
 // the exact steps to implement a StripeProvider against this same interface.
 // ---------------------------------------------------------------------------
 
-const DATA_DIR = path.join(__dirname, '..', '..', 'data');
+// DATA_DIR comes from db.js (honors the DATA_DIR env var override — see
+// there) rather than being recomputed here, so the two can never drift apart.
 const SECRET_PATH = path.join(DATA_DIR, '.mock_webhook_secret');
 
 function getMockWebhookSecret() {

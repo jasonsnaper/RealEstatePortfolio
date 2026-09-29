@@ -7,7 +7,7 @@ const { createCheckoutSession, describeProvider } = require('../lib/paymentProvi
 const { saveBase64Image } = require('../lib/helpers');
 const path = require('path');
 
-const UPLOADS_DIR = path.join(__dirname, '..', '..', 'public', 'uploads');
+const { UPLOADS_DIR } = require('../db');
 
 // ---------------------------------------------------------------------------
 // Everything in this file is reachable with ONLY a payment-link token — no

@@ -1,0 +1,13 @@
+# The database, the auto-generated webhook signing secret, and any other
+# per-install state. Never commit these — app.db holds real tenant/financial
+# data once you're using this for real, and the secret file must stay
+# unique per install.
+/data/
+
+# Photos and documents the app has stored for you. These are your data, not
+# part of the app itself, and can be large/binary.
+/public/uploads/properties/
+
+# Editor/OS cruft.
+.DS_Store
+*.log

@@ -16,6 +16,13 @@ const App = (function () {
   let ownerName = '';
 
   async function boot() {
+    // Independent of the setup/sign-in flow below on purpose: an owner about
+    // to lose data needs to see this on the very first screen they land on
+    // (setup, sign-in, or the signed-in app), not just after signing in.
+    // Fire-and-forget — a failure here isn't worth a second error banner,
+    // since an unreachable server already surfaces via renderFatalError below.
+    checkStorageStatus();
+
     let status;
     try {
       status = await Api.get('/api/setup/status');
@@ -43,6 +50,32 @@ const App = (function () {
 
     attachRouter();
     route();
+  }
+
+  async function checkStorageStatus() {
+    try {
+      renderStorageBanner(await Api.get('/api/system-status'));
+    } catch (err) {
+      // Leave whatever was there (nothing, on first load) — see boot()'s comment.
+    }
+  }
+
+  // Deliberately not dismissible: the fix is two environment variables, and
+  // the cost of an owner dismissing this and forgetting is silent, total data
+  // loss on the next restart or redeploy. Renders into a node the router
+  // never touches (see route()), so it survives every hash-route navigation
+  // until the underlying status actually changes on a later boot() call.
+  function renderStorageBanner(status) {
+    const root = qs('#system-banner-root');
+    if (!root) return;
+    if (!status || !status.atRisk) { root.innerHTML = ''; return; }
+    root.innerHTML =
+      '<div class="system-banner">' +
+        '<strong>Persistent storage is not configured.</strong> ' +
+        'The database and uploaded photos/documents will be lost the next time this service restarts or redeploys. ' +
+        'Set <code>DATA_DIR</code> and <code>UPLOADS_DIR</code> to point at a persistent disk — see the README, ' +
+        '&ldquo;Before you deploy this beyond your own machine.&rdquo;' +
+      '</div>';
   }
 
   function attachRouter() {

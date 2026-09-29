@@ -58,7 +58,6 @@ const PropertyView = (function () {
             '<button class="btn small" id="replace-cover-btn">' + (p.coverPhotoUrl ? 'Replace photo' : 'Add cover photo') + '</button>' +
             (p.coverPhotoUrl ? '<button class="btn small" id="reposition-cover-btn">Reposition</button>' : '') +
           '</div>' +
-          '<input type="file" accept="image/*" id="cover-file-input" style="display:none">' +
         '</div>' +
         '<div class="prop-title-row">' +
           '<div>' +
@@ -150,27 +149,42 @@ const PropertyView = (function () {
   function wireHeaderActions(p) {
     qs('#edit-property-btn').addEventListener('click', () => openEditPropertyModal(p));
     const archiveBtn = qs('#archive-btn');
-    if (archiveBtn) archiveBtn.addEventListener('click', async () => {
+    if (archiveBtn) wireAction(archiveBtn, async () => {
       if (!(await confirmDialog('Archive ' + p.name + '? Its history stays intact and it can be unarchived anytime.', 'Archive'))) return;
       await Api.post('/api/properties/' + propertyId + '/archive');
       Toast.show('Property archived.', 'success');
       location.hash = '#/';
-    });
+    }, { busyLabel: 'Archiving…' });
     const unarchiveBtn = qs('#unarchive-btn');
-    if (unarchiveBtn) unarchiveBtn.addEventListener('click', async () => {
+    if (unarchiveBtn) wireAction(unarchiveBtn, async () => {
       await Api.post('/api/properties/' + propertyId + '/unarchive');
+      Toast.show('Property unarchived.', 'success');
       render(propertyId, activeTab);
-    });
-    qs('#replace-cover-btn').addEventListener('click', () => qs('#cover-file-input').click());
-    qs('#cover-file-input').addEventListener('change', async (e) => {
-      const file = e.target.files[0]; if (!file) return;
-      const dataUrl = await compressImage(file, 1800, 0.85);
-      await Api.post('/api/properties/' + propertyId + '/cover-photo', { dataUrl });
-      Toast.show('Cover photo updated.', 'success');
-      render(propertyId, activeTab);
-    });
+    }, { busyLabel: 'Unarchiving…' });
+    qs('#replace-cover-btn').addEventListener('click', () => openCoverPhotoModal());
     const repositionBtn = qs('#reposition-cover-btn');
     if (repositionBtn) repositionBtn.addEventListener('click', () => openRepositionModal(p));
+  }
+
+  function openCoverPhotoModal() {
+    const picker = PhotoPicker({ multiple: false });
+    const modal = Modal.open(
+      '<h2>Cover photo</h2>' +
+      '<div class="field">' + picker.html() + '</div>' +
+      '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Save</button></div>'
+    );
+    picker.wire(modal);
+    const cancel = async () => { if (await Modal.close()) picker.destroy(); };
+    modal.querySelector('[data-act="cancel"]').addEventListener('click', cancel);
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
+      if (picker.hasPendingConversions()) throw new Error('Still converting the photo — try again in a moment.');
+      const file = picker.getFiles()[0];
+      if (!file) throw new Error('Choose a photo first.');
+      const dataUrl = await compressImage(file, 1800, 0.85);
+      await Api.post('/api/properties/' + propertyId + '/cover-photo', { dataUrl });
+      picker.destroy();
+      render(propertyId, activeTab);
+    }, { savedMessage: 'Cover photo updated.' });
   }
 
   function openRepositionModal(p) {
@@ -187,11 +201,10 @@ const PropertyView = (function () {
     qs('#focal-x', modal).addEventListener('input', update);
     qs('#focal-y', modal).addEventListener('input', update);
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
       await Api.put('/api/properties/' + propertyId + '/cover-focal', { x: Number(qs('#focal-x', modal).value), y: Number(qs('#focal-y', modal).value) });
-      Modal.close();
       render(propertyId, activeTab);
-    });
+    }, { savedMessage: 'Cover photo repositioned.' });
   }
 
   function openEditPropertyModal(p) {
@@ -211,10 +224,9 @@ const PropertyView = (function () {
       '</form>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('#edit-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      await Api.put('/api/properties/' + propertyId, formData(e.target));
-      Modal.close();
+    const form = modal.querySelector('#edit-form');
+    wireSave(form, async () => {
+      await Api.put('/api/properties/' + propertyId, formData(form));
       render(propertyId, activeTab);
     });
   }
@@ -449,40 +461,45 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn danger" data-act="delete">Delete photo</button><button class="btn" data-act="close">Close</button><button class="btn primary" data-act="save">Save</button></div>'
     );
     modal.querySelector('[data-act="close"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
       await Api.put('/api/photos/' + p.id, { caption: qs('#lb-caption', modal).value, album: qs('#lb-album', modal).value });
-      Modal.close(); renderTab(propertyCache);
+      renderTab(propertyCache);
     });
-    modal.querySelector('[data-act="delete"]').addEventListener('click', async () => {
+    wireAction(modal.querySelector('[data-act="delete"]'), async () => {
       if (!(await confirmDialog('Delete this photo? This cannot be undone.', 'Delete'))) return;
       await Api.del('/api/photos/' + p.id);
-      Modal.close(); renderTab(propertyCache);
-    });
+      await Modal.close(true);
+      Toast.show('Photo deleted.', 'success');
+      renderTab(propertyCache);
+    }, { busyLabel: 'Deleting…' });
   }
   function openUploadPhotoModal(onDone) {
+    const picker = PhotoPicker({ multiple: true });
     const modal = Modal.open(
       '<h2>Upload photos</h2>' +
-      '<div class="field"><label>Photos</label><input type="file" id="photo-files" accept="image/*" multiple capture="environment"></div>' +
+      '<div class="field"><label>Photos</label>' + picker.html() + '</div>' +
       '<div class="field"><label>Album</label><select id="photo-album">' + ALBUMS.map((a) => '<option value="' + a + '">' + a + '</option>').join('') + '</select></div>' +
       '<div class="field"><label>Caption (optional, applies to all)</label><input id="photo-caption"></div>' +
       '<div class="checkbox-field"><input type="checkbox" id="photo-before-after"><label for="photo-before-after">Mark first two as a before/after pair</label></div>' +
       '<div id="upload-progress"></div>' +
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="upload">Upload</button></div>'
     );
-    modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="upload"]').addEventListener('click', async (e) => {
-      const files = Array.from(qs('#photo-files', modal).files);
-      if (files.length === 0) return;
-      setButtonBusy(e.target, true, 'Uploading…');
+    picker.wire(modal);
+    const cancel = async () => { if (await Modal.close()) picker.destroy(); };
+    modal.querySelector('[data-act="cancel"]').addEventListener('click', cancel);
+    wireSave(modal.querySelector('[data-act="upload"]'), async () => {
+      if (picker.hasPendingConversions()) throw new Error('Still converting a photo — try again in a moment.');
+      const files = picker.getFiles();
+      if (files.length === 0) throw new Error('Choose at least one photo first.');
       const images = await Promise.all(files.map((f) => compressImage(f)));
       await Api.post('/api/properties/' + propertyId + '/photos', {
         images, album: qs('#photo-album', modal).value, caption: qs('#photo-caption', modal).value,
         markBeforeAfter: qs('#photo-before-after', modal).checked,
       });
-      Modal.close();
-      Toast.show(files.length + ' photo(s) uploaded.', 'success');
+      picker.destroy();
       if (onDone) onDone(); else renderTab(propertyCache);
-    });
+      return files.length + ' photo(s) uploaded.';
+    }, { savingLabel: 'Uploading…' });
   }
 
   // ---- Documents ----
@@ -501,15 +518,18 @@ const PropertyView = (function () {
           '<td><button class="btn small" data-share="' + d.id + '" data-shared="' + d.isSharedWithTenant + '">' + (d.isSharedWithTenant ? 'Unshare' : 'Share') + '</button> <button class="btn small danger" data-del="' + d.id + '">Delete</button></td></tr>'
         )).join('') + '</tbody></table></div>');
     qs('#add-doc-btn', container).addEventListener('click', () => openAddDocumentModal());
-    qsa('[data-share]', container).forEach((btn) => btn.addEventListener('click', async () => {
-      await Api.put('/api/documents/' + btn.dataset.share, { isSharedWithTenant: btn.dataset.shared !== 'true' });
+    qsa('[data-share]', container).forEach((btn) => wireAction(btn, async () => {
+      const nowShared = btn.dataset.shared !== 'true';
+      await Api.put('/api/documents/' + btn.dataset.share, { isSharedWithTenant: nowShared });
+      Toast.show(nowShared ? 'Document shared with tenant.' : 'Document unshared.', 'success');
       renderTab(propertyCache);
     }));
-    qsa('[data-del]', container).forEach((btn) => btn.addEventListener('click', async () => {
+    qsa('[data-del]', container).forEach((btn) => wireAction(btn, async () => {
       if (!(await confirmDialog('Delete this document?', 'Delete'))) return;
       await Api.del('/api/documents/' + btn.dataset.del);
+      Toast.show('Document deleted.', 'success');
       renderTab(propertyCache);
-    }));
+    }, { busyLabel: 'Deleting…' }));
   }
   function openAddDocumentModal() {
     const modal = Modal.open(
@@ -521,19 +541,16 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Add document</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async (e) => {
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
       const file = qs('#doc-file', modal).files[0];
-      if (!file) { Toast.show('Choose a file first.', 'error'); return; }
-      setButtonBusy(e.target, true, 'Uploading…');
+      if (!file) throw new Error('Choose a file first.');
       const dataUrl = await readFileAsDataUrl(file);
-      try {
-        await Api.post('/api/properties/' + propertyId + '/documents', {
-          dataUrl, filename: file.name, category: qs('#doc-category', modal).value,
-          expirationDate: qs('#doc-expiration', modal).value || null, isSharedWithTenant: qs('#doc-shared', modal).checked,
-        });
-        Modal.close(); Toast.show('Document added.', 'success'); renderTab(propertyCache);
-      } catch (err) { Toast.show(err.message, 'error'); setButtonBusy(e.target, false); }
-    });
+      await Api.post('/api/properties/' + propertyId + '/documents', {
+        dataUrl, filename: file.name, category: qs('#doc-category', modal).value,
+        expirationDate: qs('#doc-expiration', modal).value || null, isSharedWithTenant: qs('#doc-shared', modal).checked,
+      });
+      renderTab(propertyCache);
+    }, { savingLabel: 'Uploading…', savedMessage: 'Document added.' });
   }
 
   // ---- Transactions ----
@@ -572,16 +589,14 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Add</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async (e) => {
-      try {
-        await Api.post('/api/properties/' + propertyId + '/transactions', {
-          type: qs('#txn-type', modal).value, direction: qs('#txn-direction', modal).value, amount: qs('#txn-amount', modal).value,
-          date: qs('#txn-date', modal).value, category: qs('#txn-category', modal).value, description: qs('#txn-description', modal).value,
-          isCapital: qs('#txn-capital', modal).checked,
-        });
-        Modal.close(); Toast.show('Transaction added.', 'success'); render(propertyId, activeTab);
-      } catch (err) { Toast.show(err.message, 'error'); }
-    });
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
+      await Api.post('/api/properties/' + propertyId + '/transactions', {
+        type: qs('#txn-type', modal).value, direction: qs('#txn-direction', modal).value, amount: qs('#txn-amount', modal).value,
+        date: qs('#txn-date', modal).value, category: qs('#txn-category', modal).value, description: qs('#txn-description', modal).value,
+        isCapital: qs('#txn-capital', modal).checked,
+      });
+      render(propertyId, activeTab);
+    }, { savedMessage: 'Transaction added.' });
   }
 
   // ---- Property Value ----
@@ -621,13 +636,13 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Add</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
       await Api.post('/api/properties/' + propertyId + '/valuations', {
         value: qs('#val-amount', modal).value, valuationDate: qs('#val-date', modal).value,
         source: qs('#val-source', modal).value, isPurchase: qs('#val-purchase', modal).checked,
       });
-      Modal.close(); renderTab(propertyCache);
-    });
+      renderTab(propertyCache);
+    }, { savedMessage: 'Valuation added.' });
   }
   function openAddImprovementModal() {
     const modal = Modal.open(
@@ -640,10 +655,10 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Add</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
       await Api.post('/api/properties/' + propertyId + '/capital-improvements', { description: qs('#imp-desc', modal).value, amount: qs('#imp-amount', modal).value, date: qs('#imp-date', modal).value });
-      Modal.close(); renderTab(propertyCache);
-    });
+      renderTab(propertyCache);
+    }, { savedMessage: 'Capital improvement added.' });
   }
 
   // ---- Mortgage ----
@@ -697,15 +712,15 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Add loan</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
       await Api.post('/api/properties/' + propertyId + '/mortgages', {
         lender: qs('#m-lender', modal).value, originalAmount: qs('#m-original', modal).value, currentPrincipal: qs('#m-principal', modal).value,
         interestRatePct: qs('#m-rate', modal).value, monthlyPayment: qs('#m-payment', modal).value, dueDay: qs('#m-due-day', modal).value,
         escrow: qs('#m-escrow', modal).value, originationDate: qs('#m-origination', modal).value, maturityDate: qs('#m-maturity', modal).value,
         notes: qs('#m-notes', modal).value,
       });
-      Modal.close(); renderTab(propertyCache);
-    });
+      renderTab(propertyCache);
+    }, { savedMessage: 'Loan added.' });
   }
   function openMortgagePaymentModal(mortgageId) {
     const modal = Modal.open(
@@ -718,10 +733,10 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Record</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
       await Api.post('/api/mortgages/' + mortgageId + '/payments', { amount: qs('#mp-amount', modal).value, principalPortion: qs('#mp-principal', modal).value, date: qs('#mp-date', modal).value });
-      Modal.close(); renderTab(propertyCache);
-    });
+      renderTab(propertyCache);
+    }, { savedMessage: 'Mortgage payment recorded.' });
   }
 
   // ---- Tenant & Lease ----
@@ -778,13 +793,11 @@ const PropertyView = (function () {
   function openAddLeaseModal() {
     const modal = Modal.open(leaseFormHtml());
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('#lease-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      try {
-        await Api.post('/api/properties/' + propertyId + '/leases', formData(e.target));
-        Modal.close(); Toast.show('Lease added.', 'success'); render(propertyId, 'tenant');
-      } catch (err) { qs('#lease-form-error', modal).innerHTML = '<div class="banner error">' + escapeHtml(err.message) + '</div>'; }
-    });
+    const form = modal.querySelector('#lease-form');
+    wireSave(form, async () => {
+      await Api.post('/api/properties/' + propertyId + '/leases', formData(form));
+      render(propertyId, 'tenant');
+    }, { savedMessage: 'Lease added.' });
   }
   function leaseFormHtml() {
     return (
@@ -821,7 +834,6 @@ const PropertyView = (function () {
           '<div class="field"><label>Late fee amount</label><input name="lateFeeAmount" placeholder="0.00 or 5 for 5%"></div>' +
         '</div>' +
         '<div class="field"><label>Owner notes (never shown to tenant)</label><textarea name="ownerNotes"></textarea></div>' +
-        '<div id="lease-form-error"></div>' +
         '<div class="modal-actions"><button type="button" class="btn" data-act="cancel">Cancel</button><button type="submit" class="btn primary">Save lease</button></div>' +
       '</form>'
     );
@@ -857,11 +869,11 @@ const PropertyView = (function () {
       '</form>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('#edit-lease-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      await Api.put('/api/leases/' + lease.id, formData(e.target));
-      Modal.close(); renderTab(propertyCache);
-    });
+    const form = modal.querySelector('#edit-lease-form');
+    wireSave(form, async () => {
+      await Api.put('/api/leases/' + lease.id, formData(form));
+      renderTab(propertyCache);
+    }, { savedMessage: 'Lease updated.' });
   }
   function openRentChangeModal(lease) {
     const modal = Modal.open(
@@ -872,10 +884,10 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Save</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
       await Api.post('/api/leases/' + lease.id + '/rent-change', { rent: qs('#rc-amount', modal).value, effectiveDate: qs('#rc-date', modal).value });
-      Modal.close(); Toast.show('Future rent updated.', 'success'); renderTab(propertyCache);
-    });
+      renderTab(propertyCache);
+    }, { savedMessage: 'Future rent updated.' });
   }
   function openEndLeaseModal(lease) {
     const modal = Modal.open(
@@ -886,10 +898,10 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn danger" data-act="save">End lease</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
       await Api.post('/api/leases/' + lease.id + '/end', { endDate: qs('#el-date', modal).value, depositDisposition: qs('#el-disposition', modal).value });
-      Modal.close(); Toast.show('Lease ended.', 'success'); render(propertyId, 'tenant');
-    });
+      render(propertyId, 'tenant');
+    }, { savedMessage: 'Lease ended.' });
   }
   function openRecordPaymentModal(charge) {
     const modal = Modal.open(
@@ -907,15 +919,13 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Record</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async (e) => {
-      try {
-        await Api.post('/api/charges/' + charge.id + '/payments', {
-          type: qs('#rp-type', modal).value, method: qs('#rp-method', modal).value,
-          amount: qs('#rp-amount', modal).value, paidAt: qs('#rp-date', modal).value, notes: qs('#rp-notes', modal).value,
-        });
-        Modal.close(); Toast.show('Payment recorded.', 'success'); render(propertyId, activeTab);
-      } catch (err) { Toast.show(err.message, 'error'); }
-    });
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
+      await Api.post('/api/charges/' + charge.id + '/payments', {
+        type: qs('#rp-type', modal).value, method: qs('#rp-method', modal).value,
+        amount: qs('#rp-amount', modal).value, paidAt: qs('#rp-date', modal).value, notes: qs('#rp-notes', modal).value,
+      });
+      render(propertyId, activeTab);
+    }, { savedMessage: 'Payment recorded.' });
   }
 
   // ---- Historical Tenants ----
@@ -969,14 +979,18 @@ const PropertyView = (function () {
     );
   }
   function openAddMaintenanceModal() {
-    const modal = Modal.open(maintenanceFormHtml());
-    wireMaintenanceForm(modal, null);
+    const picker = PhotoPicker({ multiple: true });
+    const modal = Modal.open(maintenanceFormHtml(null, picker));
+    picker.wire(modal);
+    wireMaintenanceForm(modal, null, picker);
   }
   function openEditMaintenanceModal(r) {
-    const modal = Modal.open(maintenanceFormHtml(r));
-    wireMaintenanceForm(modal, r);
+    const picker = PhotoPicker({ multiple: true });
+    const modal = Modal.open(maintenanceFormHtml(r, picker));
+    picker.wire(modal);
+    wireMaintenanceForm(modal, r, picker);
   }
-  function maintenanceFormHtml(r) {
+  function maintenanceFormHtml(r, picker) {
     r = r || {};
     return (
       '<h2>' + (r.id ? 'Update maintenance request' : 'Add maintenance request') + '</h2>' +
@@ -995,14 +1009,16 @@ const PropertyView = (function () {
         '<div class="field"><label>Scheduled date</label><input type="date" id="mt-scheduled" value="' + (r.scheduledDate || '') + '"></div>' +
         '<div class="field"><label>Completed date</label><input type="date" id="mt-completed" value="' + (r.completedDate || '') + '"></div>' +
       '</div>' +
-      '<div class="field"><label>Photos</label><input type="file" id="mt-photos" accept="image/*" multiple></div>' +
+      '<div class="field"><label>Photos</label>' + picker.html() + '</div>' +
       '<div class="modal-actions"><button type="button" class="btn" data-act="cancel">Cancel</button><button type="button" class="btn primary" data-act="save">Save</button></div>'
     );
   }
-  function wireMaintenanceForm(modal, existing) {
-    modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async () => {
-      const files = Array.from(qs('#mt-photos', modal).files || []);
+  function wireMaintenanceForm(modal, existing, picker) {
+    const cancel = async () => { if (await Modal.close()) picker.destroy(); };
+    modal.querySelector('[data-act="cancel"]').addEventListener('click', cancel);
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
+      if (picker.hasPendingConversions()) throw new Error('Still converting a photo — try again in a moment.');
+      const files = picker.getFiles();
       const images = files.length ? await Promise.all(files.map((f) => compressImage(f))) : [];
       const payload = {
         title: qs('#mt-title', modal).value, description: qs('#mt-desc', modal).value, priority: qs('#mt-priority', modal).value,
@@ -1012,8 +1028,9 @@ const PropertyView = (function () {
       };
       if (existing) await Api.put('/api/maintenance/' + existing.id, payload);
       else await Api.post('/api/properties/' + propertyId + '/maintenance', payload);
-      Modal.close(); renderTab(propertyCache);
-    });
+      picker.destroy();
+      renderTab(propertyCache);
+    }, { savedMessage: existing ? 'Maintenance request updated.' : 'Maintenance request added.' });
   }
 
   // ---- Reminders ----
@@ -1026,7 +1043,10 @@ const PropertyView = (function () {
         '<span>' + formatDateShort(r.dueDate) + (r.auto ? '' : ' <button class="btn small" data-dismiss="' + r.id + '">Dismiss</button>') + '</span></div>'
       )).join(''));
     qs('#add-reminder-btn', container).addEventListener('click', () => openAddReminderModal());
-    qsa('[data-dismiss]', container).forEach((btn) => btn.addEventListener('click', async () => { await Api.post('/api/reminders/' + btn.dataset.dismiss + '/dismiss'); renderTab(propertyCache); }));
+    qsa('[data-dismiss]', container).forEach((btn) => wireAction(btn, async () => {
+      await Api.post('/api/reminders/' + btn.dataset.dismiss + '/dismiss');
+      renderTab(propertyCache);
+    }, { busyLabel: 'Dismissing…' }));
   }
   function openAddReminderModal() {
     const modal = Modal.open(
@@ -1039,10 +1059,10 @@ const PropertyView = (function () {
       '<div class="modal-actions"><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save">Add</button></div>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    wireSave(modal.querySelector('[data-act="save"]'), async () => {
       await Api.post('/api/properties/' + propertyId + '/reminders', { title: qs('#rm-title', modal).value, type: qs('#rm-type', modal).value, dueDate: qs('#rm-date', modal).value });
-      Modal.close(); renderTab(propertyCache);
-    });
+      renderTab(propertyCache);
+    }, { savedMessage: 'Reminder added.' });
   }
 
   return { render };

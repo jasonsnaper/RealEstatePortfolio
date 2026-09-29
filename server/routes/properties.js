@@ -7,7 +7,7 @@ const { getChargeStatus, summarizeStatuses } = require('../lib/rentStatus');
 const { todayInTimezone } = require('../lib/dates');
 const { serializeAccount } = require('./bankAccounts');
 
-const UPLOADS_DIR = path.join(__dirname, '..', '..', 'public', 'uploads');
+const { UPLOADS_DIR } = require('../db');
 
 function serializeProperty(db, property) {
   // Every account linked to this property, in full (institution, mask,

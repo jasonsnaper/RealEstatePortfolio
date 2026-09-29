@@ -30,12 +30,13 @@ const AuthView = (function () {
     qs('#setup-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const btn = qs('button', e.target);
+      if (btn.disabled) return;
       setButtonBusy(btn, true, 'Creating…');
       try {
         await Api.post('/api/setup', formData(e.target));
         App.boot();
       } catch (err) {
-        qs('#setup-error').innerHTML = '<div class="banner error">' + escapeHtml(err.message) + '</div>';
+        qs('#setup-error').innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>';
         setButtonBusy(btn, false);
       }
     });
@@ -57,12 +58,13 @@ const AuthView = (function () {
     qs('#login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const btn = qs('button[type=submit]', e.target);
+      if (btn.disabled) return;
       setButtonBusy(btn, true, 'Signing in…');
       try {
         await Api.post('/api/login', formData(e.target));
         App.boot();
       } catch (err) {
-        qs('#login-error').innerHTML = '<div class="banner error">' + escapeHtml(err.message) + '</div>';
+        qs('#login-error').innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>';
         setButtonBusy(btn, false);
       }
     });
@@ -85,9 +87,18 @@ const AuthView = (function () {
     );
     qs('#forgot-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const btn = qs('button[type=submit]', e.target);
+      if (btn.disabled) return;
       const { email } = formData(e.target);
-      const res = await Api.post('/api/forgot-password', { email });
-      qs('#forgot-msg').innerHTML = '<div class="banner info">' + escapeHtml(res.message) + '</div>';
+      setButtonBusy(btn, true, 'Sending…');
+      try {
+        const res = await Api.post('/api/forgot-password', { email });
+        qs('#forgot-msg').innerHTML = '<div class="banner info">' + escapeHtml(res.message) + '</div>';
+      } catch (err) {
+        qs('#forgot-msg').innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>';
+      } finally {
+        setButtonBusy(btn, false);
+      }
     });
     qs('#have-code').addEventListener('click', () => renderResetPassword());
     qs('#back-login').addEventListener('click', renderLogin);
@@ -106,12 +117,16 @@ const AuthView = (function () {
     );
     qs('#reset-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const btn = qs('button[type=submit]', e.target);
+      if (btn.disabled) return;
+      setButtonBusy(btn, true, 'Updating…');
       try {
         const res = await Api.post('/api/reset-password', formData(e.target));
         qs('#reset-msg').innerHTML = '<div class="banner success">' + escapeHtml(res.message) + '</div>';
-        setTimeout(renderLogin, 1200);
+        setTimeout(renderLogin, 1200); // button stays disabled for this brief window on purpose — the page is about to be replaced
       } catch (err) {
-        qs('#reset-msg').innerHTML = '<div class="banner error">' + escapeHtml(err.message) + '</div>';
+        qs('#reset-msg').innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>';
+        setButtonBusy(btn, false);
       }
     });
   }

@@ -3,7 +3,7 @@ const { apiError, sendJson } = require('../lib/router');
 const { requireAuth, getOwnedPropertyOr404, saveBase64Image, logAudit } = require('../lib/helpers');
 const { dollarsToCents } = require('../lib/money');
 
-const UPLOADS_DIR = path.join(__dirname, '..', '..', 'public', 'uploads');
+const { UPLOADS_DIR } = require('../db');
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 const STATUSES = ['open', 'scheduled', 'in_progress', 'completed', 'cancelled'];
 

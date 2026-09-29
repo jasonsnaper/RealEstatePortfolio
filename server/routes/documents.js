@@ -3,7 +3,7 @@ const fs = require('fs');
 const { apiError, sendJson } = require('../lib/router');
 const { requireAuth, getOwnedPropertyOr404, saveBase64Document, logAudit } = require('../lib/helpers');
 
-const UPLOADS_DIR = path.join(__dirname, '..', '..', 'public', 'uploads');
+const { UPLOADS_DIR } = require('../db');
 const CATEGORIES = ['lease', 'lease_amendment', 'insurance', 'tax', 'inspection', 'invoice', 'receipt', 'mortgage_statement', 'other'];
 
 function serializeDocument(doc) {

@@ -140,18 +140,10 @@ const BankAccountsView = (function () {
       ).join('') + '</div>' +
       '<div class="modal-actions"><button class="btn" data-act="close">Close</button></div>';
     modal.querySelector('[data-act="close"]').addEventListener('click', Modal.close);
-    qsa('[data-act="pick"]', modal).forEach((btn) => btn.addEventListener('click', async () => {
-      setButtonBusy(btn, true, 'Linking…');
-      try {
-        await Api.post('/api/properties/' + propertyId + '/bank-accounts/link', { bankAccountId: Number(btn.dataset.id) });
-        Modal.close();
-        Toast.show('Account linked.', 'success');
-        if (onLinked) onLinked();
-      } catch (err) {
-        Toast.show(err.message, 'error');
-        setButtonBusy(btn, false);
-      }
-    }));
+    qsa('[data-act="pick"]', modal).forEach((btn) => wireSave(btn, async () => {
+      await Api.post('/api/properties/' + propertyId + '/bank-accounts/link', { bankAccountId: Number(btn.dataset.id) });
+      if (onLinked) onLinked();
+    }, { savingLabel: 'Linking…', savedMessage: 'Account linked.' }));
   }
 
   // ---- Add / edit a manual account (also used to rename or reassign a connected one) ----
@@ -183,29 +175,19 @@ const BankAccountsView = (function () {
             properties.map((p) => '<label style="display:flex;gap:8px;align-items:center;padding:6px 0;"><input type="checkbox" name="propertyIds" value="' + p.id + '"' + (linkedIds.includes(Number(p.id)) ? ' checked' : '') + '> ' + escapeHtml(p.name) + '</label>').join('') +
             '</div>'
           : '<p class="field-hint">You don’t have any rentals yet to assign this to.</p>') +
-        '<div id="account-form-error"></div>' +
         '<div class="modal-actions"><button type="button" class="btn" data-act="cancel">Cancel</button><button type="submit" class="btn primary">' + (existing ? 'Save changes' : 'Add account') + '</button></div>' +
       '</form>';
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('#account-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = qs('button[type=submit]', e.target);
-      const fd = formData(e.target);
+    const form = modal.querySelector('#account-form');
+    wireSave(form, async () => {
+      const fd = formData(form);
       const propertyIds = qsa('input[name="propertyIds"]:checked', modal).map((el) => Number(el.value));
       const payload = { nickname: fd.nickname, propertyIds };
       if (showBalanceFields) { payload.balance = fd.balance; payload.asOf = fd.asOf; }
-      setButtonBusy(btn, true, existing ? 'Saving…' : 'Adding…');
-      try {
-        if (existing) await Api.put('/api/bank-accounts/' + existing.id, payload);
-        else await Api.post('/api/bank-accounts', payload);
-        Modal.close();
-        Toast.show(existing ? 'Account updated.' : 'Account added.', 'success');
-        if (onSaved) onSaved();
-      } catch (err) {
-        qs('#account-form-error', modal).innerHTML = '<div class="banner error">' + escapeHtml(err.message) + '</div>';
-        setButtonBusy(btn, false);
-      }
-    });
+      if (existing) await Api.put('/api/bank-accounts/' + existing.id, payload);
+      else await Api.post('/api/bank-accounts', payload);
+      if (onSaved) onSaved();
+    }, { savingLabel: existing ? 'Saving…' : 'Adding…', savedMessage: existing ? 'Account updated.' : 'Account added.' });
   }
 
   // ---- Connect a real bank (Plaid) ----
@@ -291,12 +273,11 @@ const BankAccountsView = (function () {
     modal.innerHTML =
       '<h2>Choose accounts to add</h2>' +
       '<p class="field-hint">' + (exchangeResult.institutionName ? escapeHtml(exchangeResult.institutionName) + ' returned these accounts. ' : '') + 'Pick which ones to track and which rentals to assign them to.</p>' +
-      '<form id="picker-form">' + rows + '<div id="picker-error"></div>' +
+      '<form id="picker-form">' + rows +
       '<div class="modal-actions"><button type="button" class="btn" data-act="cancel">Cancel</button><button type="submit" class="btn primary">Add selected accounts</button></div></form>';
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('#picker-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = qs('button[type=submit]', e.target);
+    const form = modal.querySelector('#picker-form');
+    wireSave(form, async () => {
       const selections = [];
       exchangeResult.accounts.forEach((a, i) => {
         const checkbox = qs('#pick-' + i, modal);
@@ -305,18 +286,11 @@ const BankAccountsView = (function () {
         const propertyIds = qsa('.prop-check-' + i + ':checked', modal).map((el) => Number(el.value));
         selections.push({ externalAccountId: a.externalAccountId, name: a.name, mask: a.mask, balanceType: a.balanceType, balanceCents: a.balanceCents, nickname, propertyIds });
       });
-      if (selections.length === 0) { qs('#picker-error', modal).innerHTML = '<div class="banner error">Choose at least one account.</div>'; return; }
-      setButtonBusy(btn, true, 'Adding…');
-      try {
-        await Api.post('/api/bank-connections/' + exchangeResult.connectionId + '/import', { selections });
-        Modal.close();
-        Toast.show('Bank account' + (selections.length === 1 ? '' : 's') + ' added.', 'success');
-        if (onImported) onImported();
-      } catch (err) {
-        qs('#picker-error', modal).innerHTML = '<div class="banner error">' + escapeHtml(err.message) + '</div>';
-        setButtonBusy(btn, false);
-      }
-    });
+      if (selections.length === 0) throw new Error('Choose at least one account.');
+      await Api.post('/api/bank-connections/' + exchangeResult.connectionId + '/import', { selections });
+      if (onImported) onImported();
+      return 'Bank account' + (selections.length === 1 ? '' : 's') + ' added.';
+    }, { savingLabel: 'Adding…' });
   }
 
   function accountPickerRowHtml(a, i, properties, presetPropertyIds) {

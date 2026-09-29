@@ -4,8 +4,20 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// This is the only test file that writes uploaded files (cover photos,
+// documents) to disk. UPLOADS_DIR/DATA_DIR are read once, at module-load
+// time, by server/db.js — so these overrides MUST be set here, before the
+// requires below pull that module in. Without this, every run of this test
+// file resolved to the project's REAL public/uploads directory and wrote
+// throwaway fixture files (a tiny PNG, a fake PDF/txt) straight into the
+// real properties folders, colliding with the real seeded property IDs.
+// Pointing both at a fresh temp dir keeps every test run fully isolated
+// from the user's actual photos, documents, and data files.
+process.env.UPLOADS_DIR = path.join(os.tmpdir(), `rental-app-test-uploads-${Date.now()}-${process.pid}`);
+process.env.DATA_DIR = path.join(os.tmpdir(), `rental-app-test-datadir-${Date.now()}-${process.pid}`);
+
 const { createApp } = require('../server/index');
-const { openDatabase } = require('../server/db');
+const { openDatabase, UPLOADS_DIR } = require('../server/db');
 
 let server, db, baseUrl, port;
 let cookie = '';
@@ -111,7 +123,12 @@ test('replacing a cover photo stores a new file and updates the URL; old file is
   assert.equal(second.status, 200);
   assert.notEqual(second.body.coverPhotoUrl, first.body.coverPhotoUrl);
 
-  const uploadsDir = path.join(__dirname, '..', 'public', 'uploads', 'properties', String(propertyId));
+  // UPLOADS_DIR comes from server/db.js, which resolves the isolated temp
+  // directory set at the top of this file — NOT the real project's
+  // public/uploads. Checking a hardcoded public/uploads path here would
+  // pass vacuously (the file was never written there in the first place)
+  // regardless of whether the deletion logic actually works.
+  const uploadsDir = path.join(UPLOADS_DIR, 'properties', String(propertyId));
   assert.ok(!fs.existsSync(path.join(uploadsDir, firstFilename)), 'old cover photo file should have been deleted');
 });
 

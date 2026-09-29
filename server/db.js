@@ -10,8 +10,22 @@ const { DatabaseSync } = require('node:sqlite');
 // (the schema is plain ANSI-ish SQL) if this grows into a multi-owner,
 // heavily concurrent product.
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+// Defaults to <project root>/data, exactly as before — but on a host where
+// the deployed code directory is replaced on every deploy (Render, Railway,
+// most PaaS platforms), the database must live on a separately-mounted
+// persistent disk instead, so DATA_DIR can be overridden with an env var.
+// Unset, this is a no-op and behaves exactly as it always has.
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// Same reasoning and same env-var override as DATA_DIR, for uploaded photos
+// and documents. This is the ONE place that resolves it — every route that
+// reads or writes an uploaded file (photos.js, documents.js, maintenance.js,
+// properties.js, sampleData.js, tenantPortal.js) and server/index.js's static
+// file server all import UPLOADS_DIR from here rather than recomputing their
+// own copy of this path, specifically so they can never disagree about where
+// an uploaded file actually lives.
+const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, '..', 'public', 'uploads');
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -340,6 +354,110 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   UNIQUE(provider, event_id)
 );
 
+-- ---------------------------------------------------------------------------
+-- Renter accounts. Deliberately separate from the pre-existing tenant_name /
+-- co_tenant_name / tenant_email / tenant_phone columns on leases (untouched,
+-- above): those stay exactly as they've always been — the owner's own quick
+-- record of who's renting, always present, never requiring a renter to do
+-- anything — while the tables below are the optional layer on top for a
+-- renter who wants (or is given) their own sign-in. A lease's billing never
+-- depends on any renter row existing.
+--
+-- Split into three concerns on purpose, per the brief:
+--   renters        — identity (name/email/phone) + optional login credentials.
+--                    Can exist with password_hash NULL forever (an owner-
+--                    entered renter who never sets up an account) — billing
+--                    and manual payment tracking work fully in that state.
+--   lease_renters  — membership: which renter(s) are on which lease, and in
+--                    what role. A renter can be on several leases over time
+--                    (moved units, past tenancies); a lease can have several
+--                    renters (co-renters), each with their own login.
+--   renter_tokens  — every single-use, expiring "renter clicked a link"
+--                    action (email verification, password reset, invitation
+--                    acceptance) through one small table rather than three
+--                    near-identical ones.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS renters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id INTEGER NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  email TEXT,
+  phone TEXT,
+  password_hash TEXT,
+  email_verified_at TEXT,
+  merged_into_renter_id INTEGER REFERENCES renters(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS lease_renters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lease_id INTEGER NOT NULL REFERENCES leases(id) ON DELETE CASCADE,
+  renter_id INTEGER NOT NULL REFERENCES renters(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'primary',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(lease_id, renter_id)
+);
+
+CREATE TABLE IF NOT EXISTS renter_sessions (
+  token TEXT PRIMARY KEY,
+  renter_id INTEGER NOT NULL REFERENCES renters(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+
+-- purpose: 'verify_email' | 'reset_password' | 'invitation'. lease_id/role
+-- are only set for 'invitation' tokens (which lease + what role it grants
+-- once accepted); NULL for the other two purposes.
+CREATE TABLE IF NOT EXISTS renter_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token TEXT NOT NULL UNIQUE,
+  renter_id INTEGER NOT NULL REFERENCES renters(id) ON DELETE CASCADE,
+  purpose TEXT NOT NULL,
+  lease_id INTEGER REFERENCES leases(id) ON DELETE CASCADE,
+  role TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  used_at TEXT
+);
+
+-- Explicit per-document sharing. Exactly one of lease_id/renter_id is set:
+-- a lease-scoped share is visible to every renter currently on that lease
+-- (lease_renters), a renter-scoped share is visible to that one renter only
+-- (e.g. a former tenant's own final statement, kept visible to them alone
+-- after their lease's other renters — if any — moved on). This supersedes
+-- documents.is_shared_with_tenant as the enforced source of truth (see the
+-- migration below for how existing shared documents are carried forward).
+CREATE TABLE IF NOT EXISTS document_shares (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  lease_id INTEGER REFERENCES leases(id) ON DELETE CASCADE,
+  renter_id INTEGER REFERENCES renters(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK ((lease_id IS NOT NULL) != (renter_id IS NOT NULL))
+);
+
+-- A generated PDF is an immutable snapshot: once created, its file and
+-- totals_json never change, even if later corrections change the ledger —
+-- see server/lib/statements.js. is_sample marks one built from is_sample
+-- property data, so it can be watermarked and never confused for a real record.
+CREATE TABLE IF NOT EXISTS payment_statements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lease_id INTEGER NOT NULL REFERENCES leases(id) ON DELETE CASCADE,
+  range_type TEXT NOT NULL,
+  range_start TEXT NOT NULL,
+  range_end TEXT NOT NULL,
+  generated_by TEXT NOT NULL DEFAULT 'owner',
+  generated_by_renter_id INTEGER REFERENCES renters(id),
+  is_sample INTEGER NOT NULL DEFAULT 0,
+  file_path TEXT NOT NULL,
+  totals_json TEXT,
+  shared_with_renter INTEGER NOT NULL DEFAULT 0,
+  emailed_at TEXT,
+  emailed_to TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   actor_type TEXT NOT NULL,
@@ -360,6 +478,15 @@ CREATE INDEX IF NOT EXISTS idx_payments_charge ON payments(charge_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_property ON transactions(property_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(owner_id);
 CREATE INDEX IF NOT EXISTS idx_payment_links_token ON payment_links(token);
+CREATE INDEX IF NOT EXISTS idx_renters_owner ON renters(owner_id);
+CREATE INDEX IF NOT EXISTS idx_lease_renters_lease ON lease_renters(lease_id);
+CREATE INDEX IF NOT EXISTS idx_lease_renters_renter ON lease_renters(renter_id);
+CREATE INDEX IF NOT EXISTS idx_renter_sessions_renter ON renter_sessions(renter_id);
+CREATE INDEX IF NOT EXISTS idx_renter_tokens_renter ON renter_tokens(renter_id);
+CREATE INDEX IF NOT EXISTS idx_document_shares_document ON document_shares(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_shares_lease ON document_shares(lease_id);
+CREATE INDEX IF NOT EXISTS idx_document_shares_renter ON document_shares(renter_id);
+CREATE INDEX IF NOT EXISTS idx_payment_statements_lease ON payment_statements(lease_id);
 `;
 
 // Additive migrations for columns added after a database's initial CREATE
@@ -391,6 +518,116 @@ const MIGRATIONS = [
     if (!names.has('mask')) db.exec('ALTER TABLE bank_accounts ADD COLUMN mask TEXT');
     if (!names.has('institution_name')) db.exec('ALTER TABLE bank_accounts ADD COLUMN institution_name TEXT');
     if (!names.has('balance_type')) db.exec('ALTER TABLE bank_accounts ADD COLUMN balance_type TEXT');
+  },
+
+  // v3 -> v4: maintenance_requests.lease_id, so a tenant-submitted request can
+  // be scoped to the lease that was active when it was filed. Existing rows
+  // (all pre-dating this column) stay NULL — they simply won't appear in the
+  // new lease-scoped renter portal view, which is the safe default (the
+  // owner's own dashboard is unaffected; it was never lease-scoped).
+  (db) => {
+    const cols = db.prepare("PRAGMA table_info(maintenance_requests)").all();
+    if (!cols.some((c) => c.name === 'lease_id')) {
+      db.exec('ALTER TABLE maintenance_requests ADD COLUMN lease_id INTEGER REFERENCES leases(id) ON DELETE SET NULL');
+    }
+  },
+
+  // v4 -> v5: documents.needs_sharing_review, set for a document that WAS
+  // shared property-wide (is_shared_with_tenant=1) under the old model but
+  // whose intended recipient can't be safely inferred once sharing becomes
+  // per-lease (see the backfill migration below, which sets this flag).
+  (db) => {
+    const cols = db.prepare("PRAGMA table_info(documents)").all();
+    if (!cols.some((c) => c.name === 'needs_sharing_review')) {
+      db.exec('ALTER TABLE documents ADD COLUMN needs_sharing_review INTEGER NOT NULL DEFAULT 0');
+    }
+  },
+
+  // v5 -> v6: back-fill renters/lease_renters from the tenant_name/
+  // co_tenant_name/tenant_email/tenant_phone columns that already exist on
+  // every lease, so every pre-existing tenant already has a (login-less)
+  // renter identity ready for the owner to invite, WITHOUT the owner having
+  // to re-enter anyone. Guarded by leases.renter_backfilled_at so this runs
+  // exactly once per lease no matter how many times startup re-runs every
+  // migration (see openDatabase()'s comment on why that's deliberate).
+  //
+  // De-duplication is deliberately conservative: two leases are only ever
+  // treated as the same person when their tenant_email matches exactly
+  // (case-insensitively). Without an email on file, every lease gets its own
+  // fresh renter row, even if the name matches another lease — a name match
+  // alone is not good enough evidence that two different tenants are the
+  // same real person, and wrongly merging two strangers into one login would
+  // be far worse than leaving the owner to invite the same person twice.
+  (db) => {
+    const leaseCols = db.prepare("PRAGMA table_info(leases)").all();
+    if (!leaseCols.some((c) => c.name === 'renter_backfilled_at')) {
+      db.exec('ALTER TABLE leases ADD COLUMN renter_backfilled_at TEXT');
+    }
+
+    const findRenterByEmail = db.prepare('SELECT * FROM renters WHERE owner_id = ? AND email IS NOT NULL AND lower(email) = lower(?) LIMIT 1');
+    const insertRenter = db.prepare('INSERT INTO renters (owner_id, name, email, phone) VALUES (?, ?, ?, ?)');
+    const linkRenter = db.prepare('INSERT OR IGNORE INTO lease_renters (lease_id, renter_id, role) VALUES (?, ?, ?)');
+
+    function findOrCreateRenter(ownerId, name, email, phone) {
+      const cleanEmail = email ? String(email).trim().toLowerCase() : null;
+      if (cleanEmail) {
+        const existing = findRenterByEmail.get(ownerId, cleanEmail);
+        if (existing) return existing.id;
+      }
+      const result = insertRenter.run(ownerId, name, cleanEmail, phone || null);
+      return result.lastInsertRowid;
+    }
+
+    const leases = db.prepare("SELECT * FROM leases WHERE renter_backfilled_at IS NULL").all();
+    for (const lease of leases) {
+      const property = db.prepare('SELECT owner_id FROM properties WHERE id = ?').get(lease.property_id);
+      if (property && lease.tenant_name && lease.tenant_name.trim()) {
+        const primaryId = findOrCreateRenter(property.owner_id, lease.tenant_name.trim(), lease.tenant_email, lease.tenant_phone);
+        linkRenter.run(lease.id, primaryId, 'primary');
+        if (lease.co_tenant_name && lease.co_tenant_name.trim()) {
+          // Co-tenants have no separate email/phone columns on leases today,
+          // so each backfills to its own fresh identity unless a later
+          // invitation links it to something more specific.
+          const coId = findOrCreateRenter(property.owner_id, lease.co_tenant_name.trim(), null, null);
+          linkRenter.run(lease.id, coId, 'co_renter');
+        }
+      }
+      db.prepare("UPDATE leases SET renter_backfilled_at = datetime('now') WHERE id = ?").run(lease.id);
+    }
+  },
+
+  // v6 -> v7: carry forward documents that were shared property-wide under
+  // the old is_shared_with_tenant flag into the new per-lease document_shares
+  // model — but ONLY where the recipient is unambiguous. A property with
+  // exactly one lease ever (so exactly one possible intended recipient)
+  // migrates cleanly. A property with more than one lease (current tenant,
+  // past tenants, or both) can't be resolved safely — WHICH tenant(s) the
+  // owner meant when they flipped that switch isn't recorded anywhere, so
+  // rather than guess (and risk exposing a private document to the wrong
+  // tenant, or to every tenant who ever lived there), the file is preserved
+  // exactly as-is and flagged needs_sharing_review for the owner to look at.
+  // Guarded by a schema_meta marker so this one-time reclassification never
+  // repeats (unlike the per-row markers above, nothing on `documents` itself
+  // is a natural "already handled" flag, since is_shared_with_tenant is
+  // deliberately left untouched for anyone reading the raw column directly).
+  (db) => {
+    const done = db.prepare("SELECT value FROM schema_meta WHERE key = 'document_shares_backfilled'").get();
+    if (done) return;
+
+    const sharedDocs = db.prepare('SELECT * FROM documents WHERE is_shared_with_tenant = 1').all();
+    const insertShare = db.prepare('INSERT INTO document_shares (document_id, lease_id) VALUES (?, ?)');
+    const flagReview = db.prepare('UPDATE documents SET needs_sharing_review = 1 WHERE id = ?');
+    for (const doc of sharedDocs) {
+      const leases = db.prepare('SELECT id FROM leases WHERE property_id = ?').all(doc.property_id);
+      if (leases.length === 1) {
+        insertShare.run(doc.id, leases[0].id);
+      } else {
+        // Zero leases: nothing to share with anyway, nothing to flag either.
+        // Two or more: genuinely ambiguous — flag for the owner, share with no one yet.
+        if (leases.length > 1) flagReview.run(doc.id);
+      }
+    }
+    db.prepare("INSERT INTO schema_meta (key, value) VALUES ('document_shares_backfilled', datetime('now'))").run();
   },
 ];
 
@@ -432,4 +669,4 @@ function openDefaultDatabase() {
   return openDatabase(path.join(DATA_DIR, 'app.db'));
 }
 
-module.exports = { openDatabase, openDefaultDatabase, DATA_DIR };
+module.exports = { openDatabase, openDefaultDatabase, DATA_DIR, UPLOADS_DIR };

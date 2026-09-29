@@ -263,25 +263,15 @@ const DashboardView = (function () {
           '</select>' +
           '<span class="field-hint">Used to compute due/late dates and "today" correctly for this property.</span>' +
         '</div>' +
-        '<div id="add-property-error"></div>' +
         '<div class="modal-actions"><button type="button" class="btn" data-act="cancel">Cancel</button><button type="submit" class="btn primary">Add rental</button></div>' +
       '</form>'
     );
     modal.querySelector('[data-act="cancel"]').addEventListener('click', Modal.close);
-    modal.querySelector('#add-property-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = qs('button[type=submit]', e.target);
-      setButtonBusy(btn, true, 'Adding…');
-      try {
-        const created = await Api.post('/api/properties', formData(e.target));
-        Modal.close();
-        Toast.show('Rental added.', 'success');
-        location.hash = '#/property/' + created.id;
-      } catch (err) {
-        qs('#add-property-error').innerHTML = '<div class="banner error">' + escapeHtml(err.message) + '</div>';
-        setButtonBusy(btn, false);
-      }
-    });
+    const form = modal.querySelector('#add-property-form');
+    wireSave(form, async () => {
+      const created = await Api.post('/api/properties', formData(form));
+      location.hash = '#/property/' + created.id;
+    }, { savingLabel: 'Adding…', savedMessage: 'Rental added.' });
   }
 
   return { render };

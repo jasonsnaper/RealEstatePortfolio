@@ -29,7 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const { openDefaultDatabase } = require('./db');
+const { openDefaultDatabase, UPLOADS_DIR } = require('./db');
 const { hashPassword } = require('./lib/auth');
 const { dollarsToCents } = require('./lib/money');
 const { todayInTimezone, addMonths, addDays, compareDates } = require('./lib/dates');
@@ -38,7 +38,12 @@ const { recordChargePayment } = require('./lib/paymentAllocation');
 const { saveBase64Image, saveBase64Document } = require('./lib/helpers');
 
 const TIMEZONE = 'America/Denver';
-const UPLOADS_DIR = path.join(__dirname, '..', 'public', 'uploads');
+// UPLOADS_DIR comes from db.js (honors the UPLOADS_DIR env var override) —
+// this file used to compute its own copy of this path, which meant seeded
+// cover photos/documents/maintenance images were written to the CODE
+// directory's public/uploads even on a deployment where the real app data
+// was correctly configured to live on a separate persistent disk. That's
+// exactly the kind of silent path mismatch this fix is about.
 const ASSETS_DIR = path.join(__dirname, '..', 'seed-assets');
 
 const DEMO_OWNER_NAME = 'Demo Owner';

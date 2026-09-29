@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { apiError, sendJson } = require('../lib/router');
 const { requireAuth, getOwnedPropertyOr404, saveBase64Image, logAudit } = require('../lib/helpers');
 
-const UPLOADS_DIR = path.join(__dirname, '..', '..', 'public', 'uploads');
+const { UPLOADS_DIR } = require('../db');
 const ALBUMS = ['move-in', 'move-out', 'inspection', 'repair', 'receipt', 'general'];
 
 function serializePhoto(photo) {

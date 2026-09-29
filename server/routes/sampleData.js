@@ -3,7 +3,7 @@ const path = require('path');
 const { sendJson } = require('../lib/router');
 const { requireAuth, logAudit } = require('../lib/helpers');
 
-const UPLOADS_DIR = path.join(__dirname, '..', '..', 'public', 'uploads');
+const { UPLOADS_DIR } = require('../db');
 
 // ---------------------------------------------------------------------------
 // Sample/demo data lives in the same tables as real data, distinguished only
