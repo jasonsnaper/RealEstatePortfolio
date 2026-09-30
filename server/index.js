@@ -24,6 +24,7 @@ const { registerPaymentLinkRoutes } = require('./routes/paymentLinks');
 const { registerTenantPortalRoutes } = require('./routes/tenantPortal');
 const { registerMockCheckoutRoutes } = require('./routes/mockCheckout');
 const { registerWebhookRoutes } = require('./routes/webhooks');
+const { registerSmsWebhookRoutes } = require('./routes/smsWebhooks');
 const { registerSampleDataRoutes } = require('./routes/sampleData');
 const { registerRenterAuthRoutes } = require('./routes/renterAuth');
 const { registerRenterManagementRoutes } = require('./routes/renterManagement');
@@ -79,7 +80,8 @@ function createApp({ db, port }) {
   registerTenantPortalRoutes(router, { db, appBaseUrl });
   registerMockCheckoutRoutes(router, { db, port });
   const handleMockWebhook = registerWebhookRoutes(router, { db });
-  registerRenterAuthRoutes(router, { db });
+  const handleTwilioStatusWebhook = registerSmsWebhookRoutes(router, { db, appBaseUrl });
+  registerRenterAuthRoutes(router, { db, appBaseUrl });
   registerRenterManagementRoutes(router, { db, appBaseUrl });
   registerRenterPortalRoutes(router, { db, appBaseUrl });
   registerStatementRoutes(router, { db });
@@ -218,6 +220,10 @@ function createApp({ db, port }) {
     if (req.method === 'POST' && url.pathname === '/api/webhooks/mock-provider') {
       const rawBody = await readRawBody(req);
       return handleMockWebhook(req, res, rawBody);
+    }
+    if (req.method === 'POST' && url.pathname === '/api/webhooks/twilio-sms') {
+      const rawBody = await readRawBody(req);
+      return handleTwilioStatusWebhook(req, res, rawBody);
     }
     if (url.pathname.startsWith('/uploads/')) return handleUploadRequest(req, res, url.pathname);
     if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/pay/')) return handleRequest(router, req, res);

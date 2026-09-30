@@ -49,6 +49,7 @@ function serializeRenter(renter) {
     hasAccount: !!renter.password_hash,
     emailVerified: !!renter.email_verified_at,
     mergedIntoRenterId: renter.merged_into_renter_id || null,
+    createdAt: renter.created_at,
   };
 }
 

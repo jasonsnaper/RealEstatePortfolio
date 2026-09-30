@@ -16,15 +16,18 @@ let ME = null;
 let LEASES = null;
 let routerAttached = false;
 
-const PUBLIC_VIEWS = ['login', 'forgot-password', 'reset-password', 'accept-invite'];
+const PUBLIC_VIEWS = ['login', 'signup', 'forgot-password', 'reset-password', 'accept-invite', 'verify-email'];
 
 function parseHash() {
   const path = location.hash.replace(/^#\/?/, '');
   const parts = path.split('/').filter(Boolean);
   if (parts[0] === 'accept-invite' && parts[1]) return { view: 'accept-invite', token: parts[1] };
+  if (parts[0] === 'verify-email' && parts[1]) return { view: 'verify-email', token: parts[1] };
   if (parts[0] === 'forgot-password') return { view: 'forgot-password' };
   if (parts[0] === 'reset-password' && parts[1]) return { view: 'reset-password', token: parts[1] };
+  if (parts[0] === 'signup') return { view: 'signup' };
   if (parts[0] === 'login') return { view: 'login' };
+  if (parts[0] === 'profile') return { view: 'profile' };
   if (parts[0] === 'lease' && parts[1]) return { view: 'lease', id: parts[1], tab: parts[2] || 'overview' };
   return { view: 'leases' };
 }
@@ -38,8 +41,10 @@ async function boot() {
 
   const parsed = parseHash();
   if (parsed.view === 'accept-invite') return renderAcceptInvite(parsed.token);
+  if (parsed.view === 'verify-email') return renderVerifyEmail(parsed.token);
   if (parsed.view === 'forgot-password') return renderForgotPassword();
   if (parsed.view === 'reset-password') return renderResetPassword(parsed.token);
+  if (parsed.view === 'signup') return renderSignup();
 
   try {
     ME = await Api.get('/api/renter/me');
@@ -54,7 +59,69 @@ async function boot() {
     renderFatalError(err);
     return;
   }
+  if (parsed.view === 'profile') return renderProfile();
+
+  // A just-completed sign-in is exactly the moment to check for a
+  // lease-signing draft saved when a PRIOR session expired mid-signature
+  // (see leaseAgreementUI.js's saveRenterSignDraftAndRedirect) — restore it
+  // before the normal route() so the renter lands right back on "review and
+  // sign", signature already typed, instead of having to find their way
+  // there again. A payment draft (see restorePaymentDraftIfAny) is restored
+  // the same way but scoped to the Overview tab, since that's where it's
+  // only ever relevant — renderOverviewTab checks for it itself.
+  const signDraft = loadDraft(SIGN_DRAFT_KEY);
+  if (signDraft) {
+    clearDraft(SIGN_DRAFT_KEY);
+    try {
+      const agreement = await Api.get('/api/renter/agreements/' + signDraft.agreementId);
+      location.hash = '#/lease/' + agreement.leaseId;
+      route();
+      LeaseAgreementUI.openRenterSignModal(agreement, () => refreshLeasesAndRoute());
+      const sigInput = document.getElementById('la-r-signature');
+      if (sigInput && signDraft.signatureText) sigInput.value = signDraft.signatureText;
+      Toast.show('Picked up your lease-signing draft from before you were signed out.', 'info');
+      return;
+    } catch (e) { /* agreement no longer available/open — fall through to a normal route() below */ }
+  }
   route();
+}
+
+// ---------------------------------------------------------------------------
+// Draft preservation across a forced sign-out (session inactivity timeout or
+// an explicit 401 mid-flow) — "require reauthentication after session expiry
+// without losing a saved draft or creating a duplicate payment". Kept in
+// sessionStorage: scoped to this one browser tab/visit, gone once the tab
+// really closes, and never confused with a genuinely new visit's state.
+// ---------------------------------------------------------------------------
+
+const SIGN_DRAFT_KEY = 'renterSignDraft'; // written by leaseAgreementUI.js's saveRenterSignDraftAndRedirect
+const PAYMENT_DRAFT_KEY = 'renterPaymentDraft';
+
+function saveDraft(key, value) {
+  try { sessionStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* ignore */ }
+}
+function loadDraft(key) {
+  try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function clearDraft(key) {
+  try { sessionStorage.removeItem(key); } catch (e) { /* ignore */ }
+}
+
+/** Central place every renter-authenticated flow can route a caught error
+ * through: if it's the renter's session having expired/timed out, save
+ * whatever draft the caller passes, leave a one-line explanation for the
+ * login screen, and send them there — returning true so the caller stops
+ * (skips its normal error toast/banner, which would otherwise flash right
+ * before the redirect). Returns false for any other kind of error so the
+ * caller's normal handling still runs. */
+function handleIfSessionExpired(err, draftKey, draftValue) {
+  if (!(err instanceof Api.ApiError) || err.status !== 401) return false;
+  if (draftKey && draftValue) saveDraft(draftKey, draftValue);
+  setLoginNotice(describeApiError(err));
+  ME = null; LEASES = null;
+  location.hash = '';
+  boot();
+  return true;
 }
 
 function attachRouter() {
@@ -74,6 +141,7 @@ function attachRouter() {
 function route() {
   const parsed = parseHash();
   if (PUBLIC_VIEWS.includes(parsed.view)) { location.hash = '#/'; return; } // already signed in — hashchange re-fires route()
+  if (parsed.view === 'profile') { renderTopbar(); renderProfile(); return; }
   if (parsed.view === 'leases' && LEASES.length === 1) { location.hash = '#/lease/' + LEASES[0].id; return; }
 
   if (parsed.view === 'lease') {
@@ -133,6 +201,7 @@ function renderTopbar(currentLease) {
       '<nav>' +
         switcher +
         '<span class="topbar-owner-name">' + escapeHtml((ME && (ME.name || ME.email)) || '') + '</span>' +
+        '<a class="link" href="#/profile">Profile</a>' +
         '<button class="link" id="sign-out-btn" type="button">Sign out</button>' +
       '</nav>' +
     '</div>';
@@ -146,6 +215,53 @@ async function signOut() {
   ME = null; LEASES = null;
   location.hash = '';
   boot(); // setting the hash to '' when it's already '' fires no hashchange event, so boot() is called directly
+}
+
+// ---------------------------------------------------------------------------
+// Profile — reachable from the topbar in every authenticated state, INCLUDING
+// the "Waiting on assignment" screen (see renderWaitingOnAssignment below):
+// the spec is explicit that waiting on a landlord must never also mean being
+// unable to see or fix your own contact details or sign out.
+// ---------------------------------------------------------------------------
+
+function renderProfile() {
+  qs('#view-root').innerHTML =
+    '<a href="#/" class="back-link">&larr; Back</a>' +
+    '<h1 class="page-title">Your profile</h1>' +
+    '<div class="card panel" style="max-width:480px;">' +
+      '<form id="profile-form">' +
+        '<div class="field"><label>Full name</label><input name="name" required value="' + escapeHtml(ME.name || '') + '"></div>' +
+        '<div class="field"><label>Phone</label>' + Phone.fieldHtml('phone', ME.phone || '') + '</div>' +
+        '<div class="field"><label>Email</label><input name="email" type="email" required value="' + escapeHtml(ME.email || '') + '">' +
+          '<span class="field-hint">' + (ME.emailVerified ? 'Verified.' : 'Not verified yet.') + ' This is also what you sign in with.</span></div>' +
+        '<div id="profile-msg"></div>' +
+        '<button class="btn primary" type="submit">Save changes</button>' +
+      '</form>' +
+      (ME.emailVerified ? '' : '<button class="btn small" id="resend-verify-btn" style="margin-top:10px;">Resend verification link</button>') +
+    '</div>';
+  Phone.wire(qs('#profile-form'), 'phone');
+  qs('#profile-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = qs('button[type=submit]', e.target);
+    if (btn.disabled) return;
+    const fields = formData(e.target);
+    if (fields.phone && !Phone.isValid(fields.phone)) { qs('#profile-msg').innerHTML = '<div class="banner error">Enter a valid phone number, including country code.</div>'; return; }
+    setButtonBusy(btn, true, 'Saving…');
+    try {
+      ME = await Api.put('/api/renter/me', { name: fields.name, phone: fields.phone, email: fields.email });
+      qs('#profile-msg').innerHTML = '<div class="banner success">Saved.</div>';
+      renderTopbar(LEASES && LEASES.length === 1 ? LEASES[0] : undefined);
+      renderProfile();
+    } catch (err) {
+      qs('#profile-msg').innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>';
+      setButtonBusy(btn, false);
+    }
+  });
+  const resendBtn = qs('#resend-verify-btn');
+  if (resendBtn) wireAction(resendBtn, async () => {
+    const res = await Api.post('/api/renter/verify-email/request');
+    Toast.show(res.message, 'success');
+  }, { busyLabel: 'Sending…' });
 }
 
 // ---------------------------------------------------------------------------
@@ -176,8 +292,12 @@ function renderLogin() {
     '<div style="text-align:center;margin-top:14px;">' +
       '<a href="#/forgot-password" style="font-size:13px;color:var(--ink-soft);">Forgot password?</a>' +
     '</div>' +
-    '<p class="field-hint" style="text-align:center;margin-top:18px;">Your landlord invites you to this portal — there’s no self-service sign-up here.</p>'
+    '<hr style="border:none;border-top:1px solid var(--line);margin:22px 0;">' +
+    '<a href="#/signup" class="btn" style="width:100%;justify-content:center;">Make a New Account</a>' +
+    '<p class="field-hint" style="text-align:center;margin-top:14px;">Have an invitation link or text from your landlord? Open it directly instead of signing up here.</p>'
   );
+  const restoredNotice = consumeLoginNotice();
+  if (restoredNotice) qs('#login-error').innerHTML = '<div class="banner info">' + escapeHtml(restoredNotice) + '</div>';
   qs('#login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = qs('button[type=submit]', e.target);
@@ -188,9 +308,118 @@ function renderLogin() {
       location.hash = '';
       boot();
     } catch (err) {
-      qs('#login-error').innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>';
+      // 403 here is specifically "correct password, unverified email" (see
+      // POST /api/renter/login) — the one login failure with an actual next
+      // step, so it gets a resend button rather than just an error banner.
+      qs('#login-error').innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>' +
+        (err.status === 403 ? '<button type="button" class="btn small" id="resend-verify-btn" style="margin-top:10px;">Resend verification link</button>' : '');
+      const resendBtn = qs('#resend-verify-btn');
+      if (resendBtn) {
+        resendBtn.addEventListener('click', async () => {
+          const email = qs('#login-form input[name="email"]').value;
+          setButtonBusy(resendBtn, true, 'Sending…');
+          try {
+            const res = await Api.post('/api/renter/verify-email/resend', { email });
+            Toast.show(res.message, 'success');
+          } catch (err2) {
+            Toast.show(describeApiError(err2), 'error');
+          } finally {
+            setButtonBusy(resendBtn, false);
+          }
+        });
+      }
       setButtonBusy(btn, false);
     }
+  });
+}
+
+// A one-line, one-shot notice carried across a forced sign-out (session
+// timeout, explicit 401) so the login screen can explain WHY the renter is
+// suddenly looking at it, instead of a bare form with no context. Kept in
+// sessionStorage (this tab/visit only — never localStorage, which would
+// survive into a genuinely new visit and contradict "fresh login every
+// visit") and consumed (read then deleted) the first time login renders.
+function setLoginNotice(message) {
+  try { sessionStorage.setItem('renterLoginNotice', message); } catch (e) { /* ignore */ }
+}
+function consumeLoginNotice() {
+  try {
+    const msg = sessionStorage.getItem('renterLoginNotice');
+    if (msg) sessionStorage.removeItem('renterLoginNotice');
+    return msg;
+  } catch (e) { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// Make a New Account (the generic, no-invitation-link signup) — requires a
+// landlord connection code (server/lib/connectionCode.js) so a brand-new
+// account still lands in the right owner's Unassigned Renters list. Separate
+// from #/accept-invite above, which is for someone who already has a
+// renter row (created by their landlord, directly or via a lease/SMS
+// invitation) and is only ever setting a first password for it.
+// ---------------------------------------------------------------------------
+
+function renderSignup() {
+  authShell(
+    '<h2 style="margin-bottom:4px;">Make a new account</h2>' +
+    '<p class="field-hint" style="margin-bottom:18px;">Ask your landlord for their connection code — it makes sure your account lands with the right landlord.</p>' +
+    '<form id="signup-form">' +
+      '<div class="field"><label>Full name</label><input name="name" required autocomplete="name"></div>' +
+      '<div class="field"><label>Phone</label>' + Phone.fieldHtml('phone') + '</div>' +
+      '<div class="field"><label>Email</label><input name="email" type="email" required autocomplete="email"></div>' +
+      '<div class="field"><label>Password</label>' + passwordToggleHtml('password', 'new-password') + '<span class="field-hint">At least 8 characters — no other requirements.</span></div>' +
+      '<div class="field"><label>Confirm password</label>' + passwordToggleHtml('confirmPassword', 'new-password') + '</div>' +
+      '<div class="field"><label>Landlord connection code</label><input name="connectionCode" required autocomplete="off" style="text-transform:uppercase;" placeholder="e.g. AB3DEFGH"></div>' +
+      '<div id="signup-error"></div>' +
+      '<button class="btn primary" style="width:100%;justify-content:center;" type="submit">Create account</button>' +
+    '</form>' +
+    '<div style="text-align:center;margin-top:14px;">' +
+      '<a href="#/login" style="font-size:13px;color:var(--ink-soft);">Back to sign in</a>' +
+    '</div>'
+  );
+  Phone.wire(qs('#signup-form'), 'phone');
+  wirePasswordToggles(qs('#signup-form'));
+  qs('#signup-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = qs('button[type=submit]', e.target);
+    if (btn.disabled) return;
+    const fields = formData(e.target);
+    if (!Phone.isValid(fields.phone)) { qs('#signup-error').innerHTML = '<div class="banner error">Enter a valid phone number, including country code.</div>'; return; }
+    if (fields.password !== fields.confirmPassword) { qs('#signup-error').innerHTML = '<div class="banner error">Passwords do not match.</div>'; return; }
+    if (fields.password.length < 8) { qs('#signup-error').innerHTML = '<div class="banner error">Password must be at least 8 characters.</div>'; return; }
+    setButtonBusy(btn, true, 'Creating account…');
+    try {
+      const result = await Api.post('/api/renter/signup', {
+        name: fields.name, phone: fields.phone, email: fields.email,
+        password: fields.password, confirmPassword: fields.confirmPassword, connectionCode: fields.connectionCode,
+      });
+      authShell(
+        '<h2 style="margin-bottom:10px;">Check for a verification link</h2>' +
+        '<div class="banner success">' + escapeHtml(result.message) + '</div>' +
+        '<p class="field-hint" style="margin-top:14px;">Once verified, come back and sign in with your email and password.</p>' +
+        '<div style="text-align:center;margin-top:14px;"><a href="#/login">Back to sign in</a></div>'
+      );
+    } catch (err) {
+      qs('#signup-error').innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>';
+      setButtonBusy(btn, false);
+    }
+  });
+}
+
+function renderVerifyEmail(token) {
+  authShell('<div class="loading-block"><span class="spinner-inline"></span> Verifying your email…</div>');
+  Api.post('/api/renter/verify-email/confirm', { token }).then(() => {
+    authShell(
+      '<h2 style="margin-bottom:10px;">Email verified</h2>' +
+      '<div class="banner success">Your email is verified. You can sign in now.</div>' +
+      '<a href="#/login" class="btn primary" style="width:100%;justify-content:center;margin-top:14px;">Go to sign in</a>'
+    );
+  }).catch((err) => {
+    authShell(
+      '<h2 style="margin-bottom:10px;">Could not verify</h2>' +
+      '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>' +
+      '<div style="text-align:center;margin-top:14px;"><a href="#/login">Back to sign in</a></div>'
+    );
   });
 }
 
@@ -289,22 +518,27 @@ async function renderAcceptInvite(token) {
     '<form id="accept-form">' +
       (isGeneric
         ? '<div class="field"><label>Your name</label><input name="name" value="' + escapeHtml(preview.renterName || '') + '"></div>' +
-          '<div class="field"><label>Phone <span class="field-hint">(optional)</span></label><input name="phone" type="tel"></div>'
+          '<div class="field"><label>Phone <span class="field-hint">(optional)</span></label>' + Phone.fieldHtml('phone') + '</div>'
         : '') +
-      '<div class="field"><label>Password</label><input name="password" type="password" required minlength="8" autocomplete="new-password">' +
+      '<div class="field"><label>Password</label>' + passwordToggleHtml('password', 'new-password') +
         '<span class="field-hint">At least 8 characters.</span></div>' +
+      '<div class="field"><label>Confirm password</label>' + passwordToggleHtml('confirmPassword', 'new-password') + '</div>' +
       '<div id="accept-error"></div>' +
       '<button class="btn primary" style="width:100%;justify-content:center;" type="submit">Set password & sign in</button>' +
     '</form>'
   );
+  if (isGeneric) Phone.wire(qs('#accept-form'), 'phone');
+  wirePasswordToggles(qs('#accept-form'));
   qs('#accept-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = qs('button[type=submit]', e.target);
     if (btn.disabled) return;
     const fields = formData(e.target);
+    if (fields.password !== fields.confirmPassword) { qs('#accept-error').innerHTML = '<div class="banner error">Passwords do not match.</div>'; return; }
+    if (isGeneric && fields.phone && !Phone.isValid(fields.phone)) { qs('#accept-error').innerHTML = '<div class="banner error">Enter a valid phone number, including country code, or leave it blank.</div>'; return; }
     setButtonBusy(btn, true, 'Setting up…');
     try {
-      await Api.post('/api/renter/accept-invite', { token, password: fields.password, name: fields.name, phone: fields.phone });
+      await Api.post('/api/renter/accept-invite', { token, password: fields.password, name: fields.name, phone: isGeneric ? fields.phone : undefined });
       location.hash = '';
       boot();
     } catch (err) {
@@ -321,6 +555,10 @@ async function renderAcceptInvite(token) {
 // ---------------------------------------------------------------------------
 
 function renderLeaseList() {
+  // Nothing assigned at all yet — never show the (empty, confusing) leases
+  // table or any hint of an owner-side dashboard. See renderWaitingOnAssignment.
+  if (LEASES.length === 0) { renderWaitingOnAssignment({ agreement: null }); return; }
+
   qs('#view-root').innerHTML =
     '<h1 class="page-title">Your leases</h1>' +
     '<p class="page-subtitle">Pick a property to see its balance, documents, and maintenance.</p>' +
@@ -339,6 +577,52 @@ function renderLeaseList() {
     '</div>';
 }
 
+// ---------------------------------------------------------------------------
+// Waiting on assignment — the ONE main status shown for a brand-new tenancy
+// that isn't fully live yet, whether that's "no property assigned yet" or "a
+// lease is assigned but not fully signed": never the owner dashboard, never
+// an internal workflow status (draft/awaiting_landlord_signature/etc — those
+// are meaningful to an owner managing many leases, not to the one renter
+// waiting on this one), and never an empty financial dashboard with nothing
+// in it yet. `agreement` is this tenancy's current lease agreement (or null
+// if none exists yet) — when it's actually this renter's turn to sign, the
+// heading stays the same but a real, working "Review and Sign Lease" button
+// appears, reusing the exact same signing modal as the normal action-required
+// card so there is only ever one signing code path in the whole app.
+// ---------------------------------------------------------------------------
+
+function renderWaitingOnAssignment({ agreement, lease }) {
+  const OPEN_RENTER_STATUSES = ['awaiting_renter_signature', 'partially_signed'];
+  const needsSignature = agreement && OPEN_RENTER_STATUSES.includes(agreement.status);
+  const otherLeases = (LEASES || []).filter((l) => !lease || String(l.id) !== String(lease.id));
+
+  let subStatus = 'Your landlord hasn’t assigned you to a property yet.';
+  if (lease) {
+    if (!agreement) subStatus = 'You’ve been assigned to ' + escapeHtml(lease.property.name) + ' — your landlord is preparing the lease agreement.';
+    else if (agreement.status === 'awaiting_landlord_signature') subStatus = 'Your landlord is finishing their side of the lease agreement.';
+    else if (needsSignature) subStatus = 'Your lease agreement for ' + escapeHtml(lease.property.name) + ' is ready for you to review and sign.';
+    else if (agreement.status === 'changes_requested') subStatus = 'You asked for a correction — your landlord is sending an updated lease agreement.';
+    else if (agreement.status === 'declined' || agreement.status === 'voided') subStatus = 'Your landlord is preparing a new lease agreement.';
+  }
+
+  qs('#view-root').innerHTML =
+    '<div class="card panel" style="max-width:560px;margin:40px auto;text-align:center;">' +
+      '<h1 class="page-title" style="margin-bottom:8px;">Waiting on assignment</h1>' +
+      '<p class="page-subtitle" style="margin-bottom:20px;">' + subStatus + '</p>' +
+      (needsSignature ? '<button class="btn primary" id="waiting-sign-btn">Review and Sign Lease</button>' : '') +
+      (otherLeases.length > 0
+        ? '<p class="field-hint" style="margin-top:22px;">You still have full access to your ' + (otherLeases.length === 1 ? 'other tenancy' : 'other tenancies') + ':</p>' +
+          otherLeases.map((l) => '<div><a href="#/lease/' + l.id + '">' + escapeHtml(l.property.name) + (l.status === 'ended' ? ' (ended)' : '') + '</a></div>').join('')
+        : '') +
+    '</div>';
+
+  const signBtn = qs('#waiting-sign-btn');
+  if (signBtn) signBtn.addEventListener('click', async () => {
+    const full = await Api.get('/api/renter/agreements/' + agreement.id);
+    LeaseAgreementUI.openRenterSignModal(full, () => refreshLeasesAndRoute());
+  });
+}
+
 function addressLine(addr) {
   return [addr.line1, addr.line2, [addr.city, addr.state].filter(Boolean).join(', '), addr.zip].filter(Boolean).join(' · ');
 }
@@ -355,15 +639,31 @@ const TABS = [
 ];
 
 async function renderLeaseDashboard(leaseSummary, tab) {
+  // A tenancy that hasn't fully onboarded yet (no lease agreement completed)
+  // never shows the tab dashboard at all — see renderWaitingOnAssignment's
+  // header comment. This applies ONLY to this one draft lease: any other
+  // (active or ended) lease this renter has stays fully browsable via the
+  // lease switcher the topbar already shows, so an existing renter's history
+  // is never hidden just because a new tenancy is also pending — see the
+  // "otherLeases" list rendered inside renderWaitingOnAssignment.
+  if (leaseSummary.status === 'draft') {
+    let agreements;
+    try {
+      agreements = await Api.get('/api/renter/leases/' + leaseSummary.id + '/agreements');
+    } catch (err) {
+      qs('#view-root').innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>';
+      return;
+    }
+    renderWaitingOnAssignment({ agreement: agreements[0] || null, lease: leaseSummary });
+    return;
+  }
+
   qs('#view-root').innerHTML =
     (LEASES.length > 1 ? '<a href="#/" class="back-link">&larr; All leases</a>' : '') +
     '<h1 class="page-title">' + escapeHtml(leaseSummary.property.name) + '</h1>' +
     '<p class="page-subtitle">' + escapeHtml(addressLine(leaseSummary.property.address)) + '</p>' +
     (leaseSummary.status === 'ended'
       ? '<div class="banner warn">This tenancy has ended. You can still view your documents and statements here, but new maintenance requests and payments aren’t available.</div>'
-      : '') +
-    (leaseSummary.status === 'draft'
-      ? '<div class="banner info">This tenancy is pending — it becomes active once your lease agreement is reviewed and signed by both sides. Nothing is billed yet.</div>'
       : '') +
     '<div id="la-action-required-root"></div>' +
     '<div class="tabbar">' +
@@ -455,6 +755,42 @@ async function renderOverviewTab(lease) {
     }, { busyLabel: 'Preparing…' });
   }
   LeaseAgreementUI.wireRenterAgreementHistory(qs('#tab-root'), history.agreements);
+  restorePaymentDraftIfAny(lease, charges);
+}
+
+/** Reopens an in-progress payment left behind when a session expired mid-flow
+ * (see handleIfSessionExpired above) — reading the draft ALSO clears it, so
+ * this only ever fires once per saved draft, no matter how many times the
+ * Overview tab re-renders afterward. If a payment_session was already
+ * created server-side before the expiry, its real current status is fetched
+ * fresh (never assumed) — it may well have already succeeded or failed while
+ * the renter was signing back in. */
+async function restorePaymentDraftIfAny(lease, charges) {
+  const draft = loadDraft(PAYMENT_DRAFT_KEY);
+  if (!draft || String(draft.leaseId) !== String(lease.id)) return;
+  clearDraft(PAYMENT_DRAFT_KEY);
+  const charge = charges.find((c) => String(c.id) === String(draft.chargeId));
+  if (!charge) return;
+  if (draft.sessionId) {
+    try {
+      const current = await Api.get('/api/renter/leases/' + lease.id + '/sessions/' + draft.sessionId);
+      // Normalized back into the same shape createCheckoutSession's response
+      // has (sessionId + checkoutUrl) — the status-lookup endpoint itself
+      // doesn't repeat those, since callers are always expected to already
+      // have them from when the session was first created.
+      const normalized = {
+        sessionId: current.id, amountCents: current.amountCents, feeCents: current.feeCents, totalCents: current.totalCents,
+        checkoutUrl: location.origin + '/pay/' + current.id,
+      };
+      const modal = Modal.open('');
+      const phase = current.status === 'succeeded' ? 'succeeded' : (current.status === 'failed' ? 'failed' : 'waiting');
+      paintPaymentModal(modal, { phase, lease, charge, session: normalized });
+      Toast.show('Picked up your payment from before you were signed out.', 'info');
+      return;
+    } catch (e) { /* session lookup failed — fall through to a plain re-open below */ }
+  }
+  openPaymentModal(lease, charge);
+  Toast.show('You were signed out before finishing this payment — nothing was charged. Review the amount and continue.', 'info');
 }
 
 function renderChargesTable(charges, canPay) {
@@ -550,6 +886,7 @@ function paintPaymentModal(modal, s) {
         const session = await Api.post('/api/renter/leases/' + lease.id + '/checkout', { chargeId: charge.id, amount: amountStr });
         paintPaymentModal(modal, { phase: 'reviewed', lease, charge, session });
       } catch (err) {
+        if (handleIfSessionExpired(err, PAYMENT_DRAFT_KEY, { leaseId: lease.id, chargeId: charge.id, amountStr })) return;
         Toast.show(describeApiError(err), 'error');
         setButtonBusy(btn, false);
       }
@@ -592,7 +929,12 @@ function paintPaymentModal(modal, s) {
     qs('#pay-check-now', modal).addEventListener('click', () => { if (activePaymentPoller) activePaymentPoller.checkNow(); });
 
     activePaymentPoller = startPaymentPolling(lease.id, session.sessionId, (update) => {
-      if (update.error) { Toast.show(update.error, 'error'); return; }
+      if (update.error) {
+        const amountStr = ((session.amountCents || charge.outstandingCents) / 100).toFixed(2);
+        if (handleIfSessionExpired(update.rawErr, PAYMENT_DRAFT_KEY, { leaseId: lease.id, chargeId: charge.id, amountStr, sessionId: session.sessionId })) return;
+        Toast.show(update.error, 'error');
+        return;
+      }
       if (update.timedOut) {
         paintPaymentModal(modal, { phase: 'waiting', lease, charge, session });
         Toast.show('Still waiting on confirmation — you can keep this open or check back later.', 'info');
@@ -641,7 +983,7 @@ function startPaymentPolling(leaseId, sessionId, onUpdate) {
     try {
       session = await Api.get('/api/renter/leases/' + leaseId + '/sessions/' + sessionId);
     } catch (err) {
-      onUpdate({ error: describeApiError(err) });
+      onUpdate({ error: describeApiError(err), rawErr: err });
       return;
     }
     if (cancelled) return;

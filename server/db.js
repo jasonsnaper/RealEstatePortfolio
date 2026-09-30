@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS owners (
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
+  -- A short, shareable code (see server/lib/connectionCode.js) that lets a
+  -- renter create their own account through the generic /renter portal (no
+  -- emailed/texted link) while still landing in THIS owner's Unassigned
+  -- Renters list, never anyone else's. NULL until first requested — see the
+  -- v7->v8 migration below for why this can't just be NOT NULL from SCHEMA
+  -- alone on a database that predates it.
+  connection_code TEXT UNIQUE,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -400,10 +407,18 @@ CREATE TABLE IF NOT EXISTS lease_renters (
   UNIQUE(lease_id, renter_id)
 );
 
+-- expires_at is a generous OUTER bound (see server/lib/renterAuth.js) — plain
+-- database hygiene so a row can never linger forever, not the thing that
+-- actually ends a renter's visit day-to-day. last_seen_at is what does that:
+-- it slides forward on every authenticated request and requireRenterAuth
+-- rejects the session once too much time has passed since it last moved,
+-- which is this app's real, tested definition of "signed out due to being a
+-- new visit" — see renterAuth.js's header comment for the full explanation.
 CREATE TABLE IF NOT EXISTS renter_sessions (
   token TEXT PRIMARY KEY,
   renter_id INTEGER NOT NULL REFERENCES renters(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at TEXT NOT NULL
 );
 
@@ -539,6 +554,33 @@ CREATE TABLE IF NOT EXISTS lease_agreement_events (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- One row per outbound SMS (currently just renter invitations — purpose
+-- leaves room for more later without a new table). Mirrors payment_sessions'
+-- shape: created immediately with whatever the provider returns from the
+-- initial send, then updated in place as its real status arrives — 'queued'
+-- (accepted by the provider, not necessarily delivered — see
+-- server/lib/smsProvider.js) through to 'sent' | 'delivered' | 'failed' |
+-- 'undelivered'. provider_message_id is how the async status-callback
+-- webhook (server/routes/webhooks.js) finds this row again; it is NULL only
+-- for the 'not_configured' status, which is recorded so the owner can see in
+-- the invite history that nothing was actually sent (never silently dropped,
+-- and never shown as "Sent" — see README's "Sending renter invitations by
+-- SMS" section).
+CREATE TABLE IF NOT EXISTS sms_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id INTEGER NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
+  renter_id INTEGER REFERENCES renters(id) ON DELETE CASCADE,
+  purpose TEXT NOT NULL DEFAULT 'invitation',
+  to_phone TEXT NOT NULL,
+  body TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'twilio',
+  provider_message_id TEXT,
+  status TEXT NOT NULL DEFAULT 'queued',
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   actor_type TEXT NOT NULL,
@@ -573,6 +615,9 @@ CREATE INDEX IF NOT EXISTS idx_lease_agreements_lease ON lease_agreements(lease_
 CREATE INDEX IF NOT EXISTS idx_lease_signers_agreement ON lease_signers(agreement_id);
 CREATE INDEX IF NOT EXISTS idx_lease_signers_renter ON lease_signers(renter_id);
 CREATE INDEX IF NOT EXISTS idx_lease_agreement_events_agreement ON lease_agreement_events(agreement_id);
+CREATE INDEX IF NOT EXISTS idx_sms_messages_owner ON sms_messages(owner_id);
+CREATE INDEX IF NOT EXISTS idx_sms_messages_renter ON sms_messages(renter_id);
+CREATE INDEX IF NOT EXISTS idx_sms_messages_provider_message_id ON sms_messages(provider_message_id);
 `;
 
 // Additive migrations for columns added after a database's initial CREATE
@@ -702,6 +747,41 @@ const MIGRATIONS = [
       }
     }
     db.prepare("INSERT INTO schema_meta (key, value) VALUES ('document_shares_backfilled', datetime('now'))").run();
+  },
+
+  // v7 -> v8: owners.connection_code, for self-serve renter sign-up through
+  // the generic /renter portal (server/lib/connectionCode.js). Left NULL
+  // here for every pre-existing owner — it's generated lazily, the first
+  // time it's actually requested (dashboard view or the API), rather than
+  // backfilled for every owner up front, so a fresh code always has a fresh
+  // "created just now" audit trail rather than a silent migration timestamp.
+  (db) => {
+    const cols = db.prepare("PRAGMA table_info(owners)").all();
+    if (!cols.some((c) => c.name === 'connection_code')) {
+      db.exec('ALTER TABLE owners ADD COLUMN connection_code TEXT');
+      // SQLite can't add a UNIQUE column via ALTER TABLE directly, but a
+      // partial unique index gives the exact same guarantee (and, being
+      // partial on IS NOT NULL, never conflicts with the many rows still NULL).
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_owners_connection_code ON owners(connection_code) WHERE connection_code IS NOT NULL');
+    }
+  },
+
+  // v8 -> v9: renter_sessions.last_seen_at — the column the new sliding
+  // inactivity timeout actually checks (see server/lib/renterAuth.js).
+  // Backfilling it to each row's created_at (rather than to "now") is
+  // deliberate: a session that was already, say, three weeks old under the
+  // OLD 30-day-persistent model is exactly the kind of long-lived,
+  // never-really-active session the new inactivity timeout exists to end, so
+  // letting it immediately read as idle on the next request (forcing one
+  // fresh sign-in) is the safe, intended transition — never the reverse
+  // (treating every pre-existing session as freshly active just because a
+  // migration happened to run).
+  (db) => {
+    const cols = db.prepare("PRAGMA table_info(renter_sessions)").all();
+    if (!cols.some((c) => c.name === 'last_seen_at')) {
+      db.exec("ALTER TABLE renter_sessions ADD COLUMN last_seen_at TEXT");
+      db.exec("UPDATE renter_sessions SET last_seen_at = created_at WHERE last_seen_at IS NULL");
+    }
   },
 ];
 

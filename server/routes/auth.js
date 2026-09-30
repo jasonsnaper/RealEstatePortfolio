@@ -1,6 +1,7 @@
 const { apiError, sendJson } = require('../lib/router');
 const { hashPassword, verifyPassword } = require('../lib/auth');
 const { requireAuth, createSession, setSessionCookie, clearSessionCookie, logAudit } = require('../lib/helpers');
+const { getOrCreateConnectionCode, regenerateConnectionCode } = require('../lib/connectionCode');
 
 function registerAuthRoutes(router, { db }) {
   // First-run only: creates the single owner account. Refuses once an owner exists,
@@ -50,7 +51,21 @@ function registerAuthRoutes(router, { db }) {
 
   router.get('/api/me', async (req, res) => {
     const owner = requireAuth(db, req);
+    // Lazily minted the first time anything actually asks for it, rather than
+    // backfilled for every owner up front — see server/lib/connectionCode.js.
+    owner.connection_code = getOrCreateConnectionCode(db, owner.id);
     sendJson(res, 200, owner);
+  });
+
+  // Lets the owner rotate their connection code (server/lib/connectionCode.js)
+  // if it's ever shared more widely than intended — e.g. posted somewhere
+  // public by mistake. The old code stops working for sign-up immediately;
+  // anyone already signed up keeps their account regardless.
+  router.post('/api/connection-code/regenerate', async (req, res) => {
+    const owner = requireAuth(db, req);
+    const code = regenerateConnectionCode(db, owner.id);
+    logAudit(db, { actorType: 'owner', actorId: owner.id, action: 'regenerate_connection_code', entityType: 'owner', entityId: owner.id });
+    sendJson(res, 200, { connectionCode: code });
   });
 
   // Password reset without an email provider configured: issues a one-time

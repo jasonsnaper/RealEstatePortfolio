@@ -18,16 +18,17 @@ const DashboardView = (function () {
     qs('#view-root').innerHTML = '<div class="loading-block"><span class="spinner-inline"></span> Loading your portfolio…</div>';
     const { start, end } = rangeToDates(state.range);
     const portfolioQuery = start ? ('?start=' + start + '&end=' + end) : '';
-    const [portfolio, reminders, sampleStatus, unassignedRenters] = await Promise.all([
+    const [portfolio, reminders, sampleStatus, unassignedRenters, owner] = await Promise.all([
       Api.get('/api/portfolio' + portfolioQuery),
       Api.get('/api/portfolio/reminders'),
       Api.get('/api/sample-data/status'),
       Api.get('/api/renters/unassigned'),
+      Api.get('/api/me'),
     ]);
-    await renderWithData(portfolio, reminders, sampleStatus, unassignedRenters);
+    await renderWithData(portfolio, reminders, sampleStatus, unassignedRenters, owner);
   }
 
-  async function renderWithData(portfolio, reminders, sampleStatus, unassignedRenters) {
+  async function renderWithData(portfolio, reminders, sampleStatus, unassignedRenters, owner) {
     const params = new URLSearchParams();
     if (state.q) params.set('q', state.q);
     if (state.occupancy) params.set('occupancy', state.occupancy);
@@ -40,7 +41,7 @@ const DashboardView = (function () {
       '<div class="page-title">Portfolio</div>' +
       '<div class="page-subtitle">' + portfolio.propertyCount + ' active ' + (portfolio.propertyCount === 1 ? 'property' : 'properties') + ' · ' + Math.round(portfolio.occupancyRate * 100) + '% occupied</div>' +
       renderSampleBanner(sampleStatus) +
-      renderRenterActionsCard() +
+      renderRenterActionsCard(owner) +
       renderLedger(portfolio) +
       renderReminders(reminders) +
       LeaseAgreementUI.unassignedPanelHtml(unassignedRenters) +
@@ -58,7 +59,7 @@ const DashboardView = (function () {
     }
 
     wireToolbar(portfolio);
-    wireRenterActionsCard();
+    wireRenterActionsCard(owner);
     LeaseAgreementUI.wireUnassignedPanel(qs('#view-root'), unassignedRenters, () => render());
     const removeSampleBtn = qs('#remove-sample-btn');
     if (removeSampleBtn) removeSampleBtn.addEventListener('click', removeSampleData);
@@ -66,27 +67,46 @@ const DashboardView = (function () {
 
   // The renter portal has one permanent URL for every renter of this owner's
   // (no per-lease or per-property link) — "Copy Renter Portal Link" just
-  // hands that out; "Invite Renter" is the secure, trackable alternative
-  // (see leaseAgreementUI.js) for when the owner wants a link tied to a
-  // specific person that turns into an account when opened.
-  function renderRenterActionsCard() {
+  // hands that out; "Send Renter Portal Link" is the secure, trackable
+  // alternative (see leaseAgreementUI.js) for when the owner wants a link
+  // tied to a specific person, reviewed and sent by text, that turns into an
+  // account when opened. The connection code is the third way in: a renter
+  // types it themselves on the portal's "Make a New Account" screen, with no
+  // link at all — handy for a code posted on a flyer or given verbally.
+  function renderRenterActionsCard(owner) {
     return (
       '<div class="card panel" style="margin-bottom:22px;">' +
         '<div class="section-heading"><h2>Renters</h2><div class="btn-row">' +
           '<button class="btn small" id="copy-portal-link-btn">Copy Renter Portal Link</button>' +
-          '<button class="btn small primary" id="invite-renter-btn">Invite Renter</button>' +
+          '<button class="btn small primary" id="invite-renter-btn">Send Renter Portal Link</button>' +
         '</div></div>' +
-        '<p class="field-hint" style="margin:0;">The portal link works for any renter, any time — sign-in, account recovery, and creating an account all live there. "Invite Renter" instead generates a one-time secure link tied to a specific person.</p>' +
+        '<p class="field-hint" style="margin:0 0 12px;">The portal link works for any renter, any time — sign-in, account recovery, and creating an account all live there. "Send Renter Portal Link" instead generates a one-time secure link tied to a specific person, which you can text to them directly.</p>' +
+        '<div class="list-row" style="border-top:1px solid var(--line);padding-top:12px;">' +
+          '<span>Connection code: <code id="connection-code-value">' + escapeHtml(owner.connection_code || '') + '</code>' +
+            '<span class="field-hint"> — share this so a renter can make their own account without a link.</span></span>' +
+          '<span class="btn-row"><button class="btn small" id="copy-connection-code-btn">Copy</button><button class="btn small" id="regenerate-connection-code-btn">Regenerate</button></span>' +
+        '</div>' +
       '</div>'
     );
   }
-  function wireRenterActionsCard() {
+  function wireRenterActionsCard(owner) {
     qs('#copy-portal-link-btn').addEventListener('click', async () => {
       const url = location.origin + '/renter';
       try { await navigator.clipboard.writeText(url); Toast.show('Renter portal link copied.', 'success'); }
       catch (e) { Toast.show('Could not copy automatically — the link is ' + url, 'error'); }
     });
     qs('#invite-renter-btn').addEventListener('click', () => LeaseAgreementUI.openInviteRenterModal(() => render()));
+    qs('#copy-connection-code-btn').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(owner.connection_code || ''); Toast.show('Connection code copied.', 'success'); }
+      catch (e) { Toast.show('Could not copy automatically — the code is ' + owner.connection_code, 'error'); }
+    });
+    wireAction(qs('#regenerate-connection-code-btn'), async () => {
+      if (!(await confirmDialog('Regenerate your connection code? The old code will stop working for new sign-ups immediately — anyone who already made an account keeps it.', 'Regenerate'))) return;
+      const result = await Api.post('/api/connection-code/regenerate', {});
+      owner.connection_code = result.connectionCode;
+      qs('#connection-code-value').textContent = result.connectionCode;
+      Toast.show('Connection code regenerated.', 'success');
+    }, { busyLabel: 'Regenerating…' });
   }
 
   function renderSampleBanner(sampleStatus) {

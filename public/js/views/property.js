@@ -929,7 +929,7 @@ const PropertyView = (function () {
     qsa('[data-invite-renter]', scope).forEach((btn) => wireAction(btn, async () => {
       const renter = renters.find((r) => String(r.id) === btn.dataset.inviteRenter);
       const link = await Api.post('/api/leases/' + lease.id + '/renters/' + btn.dataset.inviteRenter + '/invite', {});
-      renderInviteLinkModal(renter, link);
+      LeaseAgreementUI.renderInviteLinkModal(renter, link);
     }, { busyLabel: 'Generating…' }));
     qsa('[data-remove-renter]', scope).forEach((btn) => wireAction(btn, async () => {
       if (!(await confirmDialog('Remove this renter from the lease? They will lose access to this lease in the portal — their account itself is not deleted.', 'Remove'))) return;
@@ -998,31 +998,11 @@ const PropertyView = (function () {
       onChange();
     }, { savedMessage: 'Renter added.' });
   }
-  // Same copy-link pattern as renderPaymentLinkSuccess above — no email/SMS
-  // provider is connected, so the owner copies and sends this themselves.
-  function renderInviteLinkModal(renter, link) {
-    const modal = Modal.open(
-      '<h2>Invite ' + escapeHtml(renter.name) + '</h2>' +
-      '<p class="field-hint">Share this secure link so they can set a password and sign in to the renter portal. It expires in ' + link.expiresInDays + ' days.</p>' +
-      '<div class="field"><input readonly value="' + escapeHtml(link.url) + '" id="renter-invite-link" onclick="this.select()"></div>' +
-      '<div class="banner info">No email/SMS provider is connected, so sending is manual — copy the link and send it yourself. See the README to connect a provider so this can be sent automatically.</div>' +
-      '<div class="modal-actions"><button class="btn" data-act="close">Close</button><button class="btn primary" data-act="copy">Copy link</button></div>'
-    );
-    modal.querySelector('[data-act="close"]').addEventListener('click', Modal.close);
-    const copyBtn = modal.querySelector('[data-act="copy"]');
-    const defaultLabel = copyBtn.textContent;
-    copyBtn.addEventListener('click', async () => {
-      try {
-        if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard API unavailable');
-        await navigator.clipboard.writeText(link.url);
-        copyBtn.textContent = 'Copied!';
-      } catch (e) {
-        qs('#renter-invite-link', modal).select();
-        copyBtn.textContent = 'Couldn’t copy — text selected, use Ctrl/Cmd+C';
-      }
-      setTimeout(() => { copyBtn.textContent = defaultLabel; }, 2500);
-    });
-  }
+  // The invite-link modal itself (phone/SMS review + send, Copy Link) lives
+  // in leaseAgreementUI.js's renderInviteLinkModal — shared with the
+  // dashboard's generic "Invite Renter" action, so there is exactly one
+  // implementation of "review before sending" and one place that knows how
+  // to talk to the SMS provider.
 
   // ---- Payment statements ----
   function statementsSectionHtml(statements) {

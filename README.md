@@ -15,13 +15,48 @@ before connecting real bank accounts or sending a real tenant a real payment lin
 
 ## Update log
 
-**This update** (invite a renter all the way through a signed, synced lease — applied directly to
-your existing app; every existing property, tenant, lease, photo, document, and financial record was
-left exactly as it was; nothing here required you to re-enter anything):
+**This update** (real SMS invitations, a hardened separate renter login, self-serve sign-up with
+connection codes, a reworked Unassigned Renters list, and a simplified renter waiting screen —
+applied directly to your existing app; every existing property, tenant, lease, photo, document,
+financial record, renter, and signed lease agreement was left exactly as it was):
+
+- **"Send Renter Portal Link" can now actually text the link.** A real Twilio integration
+  (`server/lib/smsProvider.js`) sends the invitation by SMS once you've added your own Twilio
+  credentials — you review the exact phone number and message text before anything goes out, "Copy
+  Link" still works exactly as it always has for sending the link yourself another way, and delivery
+  is tracked through real, honestly-reported states (queued → sent → delivered/failed) rather than
+  ever just claiming "Sent." With no credentials configured, the app says so plainly instead of
+  pretending to send anything. See "Sending renter invitations by SMS" in §4 for the exact setup.
+- **An expired invitation link can no longer lock out an existing renter.** Accepting an invite and
+  signing in afterward are enforced as two genuinely separate things now, so a renter who already has
+  a password can always sign in directly at `/renter` (or reset it) regardless of whether some
+  unrelated invitation link has since lapsed.
+- **`/renter` is now a hardened, dedicated login, not just an accept-invite landing page** — Email/
+  Password sign-in, "Forgot password?", and "Make a New Account," with no "Remember Me": every
+  session actually enforces a sliding inactivity timeout (30 minutes by default, configurable) rather
+  than counting on the browser ever being "closed," and Sign Out always ends it immediately. See "The
+  renter session model, precisely" in §4.
+- **A renter can now create their own account from nothing.** Full name, phone (with country code),
+  email, password, and a landlord **connection code** (a short, shareable code — an alternative to a
+  per-person link, good for a flyer or something read aloud) are all required and validated; password
+  rules are length-only (8+ characters, no forced character classes), matching the spec this was built
+  against. Building this turned up and closed a real account-takeover gap — see "A real security gap,
+  found and closed" in §8.
+- **Unassigned Renters is now a proper dashboard section**, not an easy-to-miss list: collapsible,
+  a live count badge, search by name/email/phone, a scrollable table with signup date and status
+  (Invited / Pending verification), a manual Refresh, and "Assign to Property" right in the row.
+- **A renter waiting on assignment or a lease signature now sees exactly one honest screen** —
+  "Waiting on assignment," never your dashboard, an internal status, or an empty financial figure —
+  with a "Review and Sign Lease" button appearing the moment it's actually their turn, and Profile/
+  Sign Out always reachable. An existing renter with history on another lease keeps full access to it
+  the entire time, alongside the waiting state for the new one. See §4.
+- 23 new automated tests (203 total, all passing) — see §8.
+
+**Previous update** (invite a renter all the way through a signed, synced lease):
 
 - **A renter can now be invited, assigned to a property, and walked through an actual e-signed lease**
-  without you re-typing anything you've already recorded. New full write-up in §5: invitations and
-  the Unassigned Renters list, assigning to a property (a "Lease Pending" draft tenancy — never a
+  without you re-typing anything you've already recorded. Full write-up in §5: invitations and the
+  Unassigned Renters list, assigning to a property (a "Lease Pending" draft tenancy — never a
   guessed-at active one), preparing the lease from a reusable template with a live PDF preview, the
   landlord signing and sending, the renter reviewing and signing (or declining, or asking for a
   correction), and what happens once every required signer is done.
@@ -39,25 +74,7 @@ left exactly as it was; nothing here required you to re-enter anything):
   the moment the last signature lands, without rewriting a single historical charge, duplicating the
   lease, or marking a future tenancy occupied before its start date. A former tenant keeps access to
   their own completed agreement afterward and never sees a later renter's.
-- 29 new automated tests (180 total, all passing) — see §8.
-
-**Previous update** (renter accounts and a full self-service renter portal):
-
-- **Renters can have their own account and sign in** at `/renter` — separate from, and in addition
-  to, the one-time no-login payment link that's always existed (`/pay/link/:token`, unchanged).
-  Signed in, a renter sees their own balance and full charge history, documents actually shared with
-  them, can file and track maintenance requests, pull next month's rent forward and pay it early, and
-  download any statement shared with them — across every lease they're on, past or present. Full
-  details in §4.
-- **Document sharing is explicit, per lease** (and, when needed, per individual renter) rather than a
-  single property-wide "shared with tenant" checkbox.
-- **Rental Payment Statement PDFs** — generate one for a lease (a month, a year, the whole tenancy to
-  date, or a custom range), share it to the renter's portal, "email" it (simulated), or delete it,
-  built with a small hand-written, dependency-free PDF writer.
-- **Ending a lease closes the loop**: it auto-generates a closing statement up to the actual move-out
-  date, and a renter who already had portal access keeps read-only access to that lease's history
-  afterward.
-- 49 automated tests added at the time (151 total then) — see §8.
+- 29 automated tests added at the time (180 total then) — see §8.
 
 ---
 
@@ -102,12 +119,13 @@ owner account on first visit.
 npm test
 ```
 
-This runs 180 tests (unit + integration) covering money math, rent-status logic, the full
+This runs 203 tests (unit + integration) covering money math, rent-status logic, the full
 payment/webhook flow, multi-tenant data isolation, mortgage totals, bank-account linking,
 payment-link generation, the mobile photo picker's HEIC handling, the shared save-lifecycle
 error-message logic, renter accounts and the renter portal, document sharing, payment statements
-(including the hand-written PDF writer), and the full invite-to-signed-lease workflow (including the
-e-signature audit trail and the demo signing adapter). See §8 for exactly what's covered.
+(including the hand-written PDF writer), the full invite-to-signed-lease workflow (including the
+e-signature audit trail and the demo signing adapter), and SMS invitations, the renter session model,
+self-serve sign-up, and the Unassigned Renters list from this update. See §8 for exactly what's covered.
 
 ---
 
@@ -190,8 +208,8 @@ From a lease's **Tenant & Lease** tab, under **Renters (portal access)**:
 - **Add renter** — name, email, phone, and a role (primary/co-renter). The email is what they sign
   in with; it can be added later if you don't have it yet, but nothing can be invited without one.
 - **Invite** — generates a secure, single-use link for that renter to set their own password and
-  sign themselves in. No email/SMS provider is configured (deliberately — see "What's simulated"
-  below), so you copy the link yourself and send it however you'd send anything else.
+  sign themselves in. Copy it yourself and send it however you like, or — see "Sending renter
+  invitations by SMS" below — text it to them directly from the same modal.
 - **Remove** — revokes that renter's access to *this* lease. It does not delete their account or any
   other lease they're linked to.
 
@@ -202,6 +220,142 @@ account does happen to get created some other way, `POST /api/renters/merge` fol
 other, transferring its lease access and resolving its old sessions transparently; there is
 deliberately no owner-facing UI for this yet — a small enough edge case that a clean API now seemed
 more valuable than a speculative screen for it later.
+
+Beyond a per-lease invite, the dashboard's **Renters** card has two more ways to get someone started,
+covered in full below: **Send Renter Portal Link** (a one-off invite by SMS, not tied to any lease
+yet — useful when you haven't assigned a property so far) and a standing **connection code** a renter
+can type into their own "Make a New Account" screen with no link at all.
+
+### Sending renter invitations by SMS
+
+**This is real, working SMS — not a simulation — once you add your own Twilio credentials.** Every
+route talks to "the SMS provider" through one small interface (`server/lib/smsProvider.js`), the same
+shape §6 uses for payments and §7 uses for bank connections, calling Twilio's plain REST API directly
+with Node's built-in `fetch` (no `twilio` npm package, to keep this app's zero-dependency design — see
+the top of this document).
+
+From the dashboard's **Renters** card, **Send Renter Portal Link** opens a modal that:
+
+1. Generates (or reuses) that renter's invitation link — the exact same link **Copy Link** would give
+   you, so texting it never creates a second, different invitation.
+2. Lets you fill in a phone number (with a country-code picker) and **review the exact message
+   text** — prefilled with the link, editable around it — before anything is sent. Nothing goes out
+   without you looking at the phone number and the words first.
+3. Sends it, and shows the real state Twilio reports back: **Not sent** (no provider configured —
+   see below), **Sent**, **Delivered**, or **Failed**, updating automatically as Twilio's own status
+   callback arrives (see "Delivery status, honestly" below) — never a fake "Sent" shown optimistically
+   before the provider has actually accepted the message.
+
+**Without Twilio credentials configured, the modal says so plainly** — "SMS sending isn't set up on
+this server yet. Copy the invitation link and send it yourself for now" — and **Copy Link** keeps
+working exactly as it always has. This is the same honest posture §6 takes on a real payment
+processor and §7 takes on a real bank connection: no fake-looking "Sent" state, ever.
+
+**To turn it on:**
+
+1. Create a free account at [twilio.com/try-twilio](https://www.twilio.com/try-twilio) and buy (or
+   use the trial) a phone number capable of sending SMS.
+2. Set these environment variables before starting the server:
+   ```
+   TWILIO_ACCOUNT_SID=...
+   TWILIO_AUTH_TOKEN=...
+   TWILIO_FROM_NUMBER=+15551234567     # the E.164 number you send from
+   ```
+   (Advanced/optional: `TWILIO_MESSAGING_SERVICE_SID` instead of `TWILIO_FROM_NUMBER`, if you've set
+   up a Twilio Messaging Service — Twilio's recommended approach once you're sending from more than
+   one number. Either one alone is enough; if both are set, the Messaging Service is preferred.)
+3. Restart the app. That's it — `isLiveModeConfigured()` flips on the moment credentials are present,
+   and "Send Renter Portal Link" starts sending for real instead of showing the setup-required state.
+4. **Recommended:** also set `APP_BASE_URL` to this server's real, publicly-reachable `https://`
+   address (the same variable §9's deploy note asks for). This is what lets Twilio call back with a
+   delivery status (below) — on an address Twilio itself can't reach (`localhost`, a private network),
+   messages still send, they just visibly stay at "Sent" here forever, since nothing can tell this
+   server what happened next. The invite modal states this plainly rather than assuming "Delivered."
+
+**Delivery status, honestly.** Sending a text only ever tells you Twilio *accepted* the message for
+delivery (status "queued"/"sent") — whether a handset actually received it is something Twilio only
+learns afterward and reports asynchronously, over a signed webhook (`POST /api/webhooks/twilio-sms`,
+handled in `server/routes/smsWebhooks.js`). That handler verifies Twilio's `X-Twilio-Signature`
+(HMAC-SHA1 keyed by your Auth Token over the callback URL and its parameters — Twilio's own documented
+algorithm) before trusting anything in the payload, exactly like `server/routes/webhooks.js` already
+does for the payment provider, and a status can only ever move forward — a **delivered** or **failed**
+message is never regressed back to an earlier state by a stray retried callback.
+
+Every text sent (or attempted) is recorded in `sms_messages` — including an honest `not_configured`
+row when no provider is set up, so the owner's own invite history never silently drops a message it
+couldn't actually send.
+
+### The connection code, precisely
+
+Your **connection code** (shown on the dashboard's Renters card, and lazily generated the first time
+anything asks for it) is a short, human-shareable code — 8 characters, from an alphabet that excludes
+visually-ambiguous ones like `0`/`O` and `1`/`I`/`L`, meant to be read aloud or copied off a printed
+page. A renter types it into their own **Make a New Account** screen (no link, no invitation from you
+at all) and it tells the app which owner's Unassigned Renters list the resulting account belongs to —
+the one piece of context a bare self-serve sign-up otherwise wouldn't have. **Regenerate** immediately
+invalidates the old code for new sign-ups; anyone who already made an account with it keeps that
+account regardless — regenerating only closes the door for whoever hasn't used it yet (say, if it
+leaked somewhere public by mistake).
+
+### Signing in, and the renter session model
+
+`/renter` is a dedicated, self-contained login — **Email**, **Password**, **Sign in**, **Forgot
+password?**, and **Make a New Account** — entirely separate from the owner's own `/` login, with its
+own session cookie (`renter_session`, distinct from the owner's) so the two can never be confused and
+an owner previewing their own site can be signed in alongside a renter in the same browser without
+either one clobbering the other's cookie.
+
+**Making a new account through "Make a New Account"** requires **Full name, Phone (with a country
+code), Email, Password, Confirm password, and a landlord connection code** — every field mandatory and
+validated, never silently optional (accepting an owner-sent invitation link, "Invite" above, is a
+separate, simpler path that only ever asks for a password, since the owner has usually already
+supplied the rest). Password rules are **length-only** (8 characters minimum, no forced mix of upper/lower/digits/
+symbols) on both paths, by design, per the spec this was built against; **Show/Hide** is available on
+both password fields on the sign-up screen so you can check what you typed before submitting.
+Passwords are hashed with the exact same `scrypt` helper (§9) the owner's own account uses — there is
+no separate, weaker path for renters.
+
+**No "Remember Me," and an honest definition of "a new visit."** The renter session cookie carries no
+`Max-Age`, so browsers treat it as a session cookie — but this app doesn't *rely* on that, since
+plenty of mainstream browsers and mobile OSs restore tabs (and their cookies) across what looks, to
+the person, like closing the browser. What's actually enforced, tested, and true on every single
+request is a **sliding inactivity timeout**: 30 minutes by default (`RENTER_SESSION_IDLE_TIMEOUT_MINUTES`
+env var to change it), measured from whatever the renter last did. As long as they keep doing anything
+— browsing, paying, signing — with gaps shorter than the timeout, the session stays alive exactly as
+long as it should; the first gap longer than that ends it, and the next request they make is rejected
+with a plain "you've been signed out after N minutes of inactivity" message rather than a confusing
+dead page. **Sign Out** (always reachable — see below) ends the session immediately either way.
+Re-authenticating after a timeout never loses anything: nothing on the renter side writes optimistically
+before the server confirms, so a timed-out request surfaces as the same plain, inline "please sign in
+again" error the rest of this app already uses for an expired session (§8's save-lifecycle work), and
+a payment retried after signing back in can't double up either, since the checkout/webhook flow (§6)
+was already idempotent end to end.
+
+**A self-serve sign-up must verify its email before it can sign in.** `POST /api/renter/login` now
+checks `email_verified_at`, not just the password — see "A real security gap, found and closed" in §8
+for exactly why this matters and what it closes. Accepting an owner-sent invitation link counts as
+proof of that email immediately (opening a link the owner generated and sent already establishes
+ownership), so this only ever actually pauses the self-serve **Make a New Account** path, and only
+until the console-logged verification link (no email provider is configured — see "What's simulated"
+below) is clicked. The login screen surfaces this as a plain "verify your email" message with its own
+**Resend verification link** action, rather than the generic wrong-password error.
+
+### Waiting on assignment, until there's a full portal to show
+
+A renter who has signed in but has no completed tenancy yet — no property assigned, or assigned but
+the lease isn't fully signed — sees exactly **one** honest screen, "Waiting on assignment," and
+nothing else: never the owner's dashboard, an internal status name, or a $0.00 financial figure that
+would look like a real, empty account. The moment there's actually something for them to do, the
+heading stays the same but a working **Review and Sign Lease** button appears (reusing the exact same
+signing modal §5 describes — there is only one signing code path in the app, reached two different
+ways). **Profile** and **Sign Out** are always reachable from this screen too — being kept waiting on
+a landlord is never also a reason to be locked out of your own contact details.
+
+Critically, this never hides a renter's **other** history: if the same renter already has full access
+to an active or ended lease elsewhere, that tenancy stays completely unaffected and one click away
+("You still have full access to your other tenancy") — the waiting state applies only to the one
+tenancy that isn't ready yet, never to the account as a whole. See "Move-out and historical access"
+below for the ended-lease side of this same guarantee.
 
 ### What a signed-in renter sees
 
@@ -275,13 +429,19 @@ their own history — the "historical access" case) both stay reachable, not jus
 
 ### What's simulated
 
-**Invite links and "emailing" a statement are both simulated** — no email or SMS provider is
+**SMS is real (once you configure Twilio — see above); email is not.** No email provider is
 configured in this environment, the same honest position §6 takes on a real payment provider and §7
-takes on a real bank connection. An invite generates a real, working, single-use link that you copy
-and send yourself; "Email" on a statement logs what *would* be sent (to the server console) and marks
-the statement shared, but no message actually leaves this server. Everything up to that boundary —
-the tokens, the expiry, the single-use enforcement, the audit trail — is real and tested; there's
-simply no outside provider wired in to hand the message to.
+takes on a real bank connection: an invite always generates a real, working, single-use link, which
+you can copy and send yourself, text via Twilio as covered above, or hand over however else you like;
+"Email" on a statement, a verification link, and a password-reset link all log what *would* be sent
+(to the server console) and update in-app state (marking a statement shared, and so on) rather than
+delivering anything externally. Everything up to that boundary — the tokens, the expiry, the
+single-use enforcement, the audit trail — is real and tested for every one of these; there's simply no
+outside email provider wired in yet to hand the message to. To close that gap, follow the same seam
+§6 and §7 already use: a small adapter (e.g. `server/lib/providers/emailProvider.js`) that the routes
+currently logging to the console would call instead, using whichever transactional-email service you
+choose (SendGrid, Postmark, AWS SES, and so on all work the same way — an API call with your own
+credentials).
 
 ---
 
@@ -295,10 +455,22 @@ whole path takes a few minutes end to end.
 
 ### Unassigned renters, and assigning one to a property
 
-A renter who signs up through a general invite (rather than being added directly to a specific lease,
-per §4) has an account but nothing to do with it yet. They show up in the **Unassigned Renters** list
-on the dashboard until an owner assigns them somewhere — there's no cross-landlord directory, and a
-renter appears under *your* account only once they've accepted a secure invitation tied to it.
+A renter who signs up through a general invite, a texted link, or their own connection code (rather
+than being added directly to a specific lease, per §4) has an account but nothing to do with it yet.
+They show up in the **Unassigned Renters** panel on the dashboard until an owner assigns them
+somewhere — there's no cross-landlord directory, and a renter appears under *your* account only once
+they've accepted a secure invitation or signed up with a code tied to it.
+
+The panel itself is a collapsible section (a live count badge in its header either way) rather than
+something you could miss: expanded by default, it shows each renter's full name, phone, email, signup
+date, and status (**Invited** — has a link out but hasn't set a password yet; **Pending verification**
+— set a password via self-serve sign-up but hasn't confirmed their email yet, see §4; or no badge at
+all once fully active), searchable by name/email/phone, in a scrolling list so a long one never pushes
+the rest of the dashboard down the page. **Refresh** re-fetches the list on demand — this app updates
+this list (and everything else) on manual refresh rather than a live/polling connection, so a renter
+who just signed up on their own phone won't appear until you click it or reload. A renter drops off the
+list the moment they're assigned, and it reads "No unassigned renters" rather than just showing nothing
+when it's empty.
 
 Assigning one to a property creates a **draft tenancy**, not an active lease. The property shows a
 **Lease Pending** badge everywhere it appears (dashboard, property card, the property page itself)
@@ -361,10 +533,13 @@ number, and the superseded copy is kept, not deleted — a signature is never ca
 
 ### The renter reviews and signs
 
-The moment a lease is sent, every tenant/co-tenant it names sees a persistent **"Action Required:
-Review and Sign Lease"** card in their portal, above every tab, until they act on it. From there they
-can open, read, and download the full document (with the landlord's signature already on it) before
-doing anything else. Signing requires its own explicit consent checkbox — never pre-checked — and a
+The moment a lease is sent, every tenant/co-tenant it names sees it the next time they're on their
+**Waiting on assignment** screen (§4) — the heading stays the same, but a **Review and Sign Lease**
+button now appears, since this tenancy has no completed lease yet and so never shows the full tab
+dashboard in the meantime (the same reasoning as the "Waiting on assignment" writeup in §4: never a
+half-populated dashboard for something that isn't real yet). Opening it lets them read and download
+the full document (with the landlord's signature already on it) before doing anything else. Signing
+requires its own explicit consent checkbox — never pre-checked — and a
 distinct, separate **"Sign and Accept Agreement"** action; typing a name into a text field is never
 treated as a signature by itself. A tenant can instead **decline** (with a required message explaining
 why) or **request a correction** (also with a message) — either one blocks further signing until the
@@ -458,11 +633,13 @@ connected without ever being proven to work.
 
 ### What's simulated
 
-Same boundary as §4: **no email or SMS provider is configured**, so "Send for Signature," a reminder,
+Same email boundary as §4: **no email provider is configured**, so "Send for Signature," a reminder,
 and emailing a completed agreement all log what *would* be sent to the server console and update the
-in-app state (the tenant's "Action Required" card, the reminder timestamp) rather than delivering
-anything externally. Everything up to that boundary is real and tested; there's no outside provider
-wired in to hand the message to.
+in-app state (the renter's waiting screen, the reminder timestamp) rather than delivering anything
+externally. This is a separate action from the renter-invitation SMS covered in §4 — texting is only
+wired up for the initial portal invite, not for a lease-agreement reminder or a completed-agreement
+email — so those still go out exactly the way §4 describes for a statement email. Everything up to
+that boundary is real and tested; there's no outside provider wired in to hand the message to.
 
 ---
 
@@ -575,7 +752,7 @@ existed since the first build and is unrelated to which of the above two account
 
 ## 8. What's actually been tested
 
-**Automated (180 tests across 14 files, `npm test`, all passing):**
+**Automated (203 tests across 15 files, `npm test`, all passing):**
 - Money math (dollar/cents parsing and formatting) and date math (month/year boundaries, clamping
   short months) — the kind of off-by-one bugs that are easy to ship silently.
 - The full rent-status state machine (upcoming/due/late/partial/paid), including refunds and
@@ -705,6 +882,34 @@ existed since the first build and is unrelated to which of the above two account
   scenario — ending one lease and assigning a new renter to the same now-vacant property, then
   confirming the first renter still sees their own completed agreement and gets a 404 on the second
   renter's, not a 403 that would reveal it exists.
+- **New — SMS invitations, the renter session model, self-serve sign-up, and Unassigned Renters**
+  (`test/renterWorkflowUpdate.test.js`, 23 tests): **Copy Link** still returns a plain, unconditional
+  URL regardless of SMS configuration; sending by text with no Twilio credentials records an honest
+  `not_configured` status rather than a fake "Sent," and, configured, validates the phone number and
+  refuses to send unless the actual invitation link is present in the message text; SMS routes refuse
+  once a renter already has an account or before any invitation exists, and are owner-scoped (a
+  different owner's request 404s); an owner session can't call a renter-portal route and a renter
+  session can't call an owner route; previewing an invitation is read-only and never sets a session
+  cookie ahead of acceptance; `GET /api/me` lazily mints a connection code and regenerating retires the
+  old one; self-serve sign-up enforces every mandatory field and a length-only password rule; **the
+  critical regression test** — signing up with an email that already belongs to an existing, unverified
+  renter exposes none of that renter's data and can't be logged into until the console-logged
+  verification link is actually used (this is the exact gap described in "A real security gap, found
+  and closed" below, written as a permanent regression test once the fix landed); signing up again for
+  an email with a working password already set is refused (409), never silently overwritten; the public
+  verify-email-resend endpoint needs no session and gives an identical response whether or not the
+  email has an account, so it can't be used to enumerate who's registered; an expired invitation never
+  blocks an existing, already-onboarded renter's plain email+password login; the Unassigned Renters
+  list carries name/phone/email/signup-date/status, drops a renter the moment they're assigned, and is
+  owner-scoped; a brand-new renter gets an empty lease list while a newly-assigned one gets exactly one
+  draft lease, and an existing renter with an active lease keeps seeing it once a second, still-pending
+  tenancy is assigned to them (the dual-tenancy/historical-access guarantee in §4); a renter session
+  idle past the timeout is rejected and deleted while one still inside the window slides forward
+  instead; and explicit sign-out ends a session immediately with the cookie unusable afterward. Four
+  more tests cover the Twilio status-callback webhook directly: a correctly-signed callback updates the
+  matching `sms_messages` row, a tampered or missing signature is rejected and changes nothing, a
+  terminal status is never regressed by an out-of-order retry, and a callback for an unrecognized
+  message id is a harmless no-op.
 
 ### The payment-link bug, confirmed
 
@@ -995,6 +1200,94 @@ by the automated HTTP tests in §8, not re-driven through a second real browser 
 the demo signing adapter's boundary, since there's nothing real to click through until a provider is
 actually connected (see "Real signing: what's actually implemented" in §5).
 
+### A real security gap, found and closed
+
+**Root cause.** The self-serve "Make a New Account" screen (§4) was built specifically so that a
+sign-up with an unproven email exposes nothing: even calling `POST /api/renter/signup` with an email
+that already belongs to a real renter — someone with real lease history — sets a password and returns
+only "account created," never that renter's data or a session. But that protection lived entirely on
+the signup side; nothing on the *sign-in* side independently checked that the email had actually been
+proven yet. `POST /api/renter/login` compared only the email and password, so the exact password
+self-serve signup just set would immediately work at the ordinary login screen — a second, unrelated
+request the signup route's own careful design never defended against by itself. Concretely: knowing
+(or guessing) a renter's email address was enough to set a new password for their identity through
+signup, then simply sign in with it seconds later and see their real balance, documents, and lease
+history.
+
+**The fix.** `POST /api/renter/login` (`server/routes/renterAuth.js`) now also requires
+`email_verified_at` to be set — a 403, not a 401, since the credentials are genuinely correct and
+"incorrect email or password" would be actively misleading about what's actually wrong. An owner-sent
+invitation link already counts as proof of ownership the instant it's accepted (accepting it
+necessarily means the renter received something the owner sent to that address), so `accept-invite`
+keeps signing a renter in immediately exactly as it always has — this gate only ever engages on the
+self-serve path, and only until its console-logged verification link (no email provider is configured
+yet — see §4) is opened. A new public `POST /api/renter/verify-email/resend` endpoint exists
+specifically for someone stuck at this gate with no way to sign in yet to request a fresh link — same
+privacy posture as forgot-password: an identical response whether or not the email exists or still
+needs verifying — and the login screen surfaces a **Resend verification link** action the moment it
+sees this exact error.
+
+**Verified, not just reasoned about:** this wasn't reported to me — I found it myself while writing
+this update's own test coverage for the new signup screen, and it's now a permanent regression test
+(`test/renterWorkflowUpdate.test.js`, §8): signing up with an existing, unverified renter's exact email
+is confirmed to return no trace of that renter's data, a login attempt with the just-set password is
+confirmed to fail with 403 rather than succeed, and only after walking through the same verification
+token a genuine signup would use does login succeed and return that renter's real, correct data. Every
+pre-existing renter-login test fixture goes through `accept-invite`, which already stamped
+`email_verified_at` immediately before this fix ever existed, so nothing already relying on
+sign-in-immediately-after-accepting-an-invite broke.
+
+### Verified by hand, the renter workflow update
+
+Same reasoning as every prior round: a login/signup/status-screen feature like this can pass every
+HTTP-level test above while still being subtly wrong, or simply unfinished, in an actual browser — so
+it was driven end to end with Playwright against a running instance of this exact app (an isolated
+database and uploads folder, never the real one), using **two separate browser contexts** (their own
+cookie jars) for the owner and the renter specifically to prove session isolation rather than assume it
+from the cookie names in the code.
+
+1. **The whole path, once, start to finish, both sides at once.** Signed in as a fresh owner, opened
+   **Send Renter Portal Link**, and reviewed the SMS modal's prefilled phone/message fields and its
+   honest "not configured" notice (no Twilio credentials in this test run) before confirming **Copy
+   Link** still works regardless. In the separate renter-side browser context, signed up cold through
+   **Make a New Account** with every mandatory field and the owner's own connection code, confirmed the
+   "verify your email" state, pulled the verification link from the server's own console output (the
+   honest stand-in for a real email provider — see §4), and signed in for real afterward. Back on the
+   owner side, confirmed the new sign-up appeared in **Unassigned Renters** as **Pending verification**
+   and then, once verified, with no badge; assigned it to a property, prepared and sent a lease
+   agreement, and confirmed the renter's **Waiting on assignment** screen picked up the new **Review and
+   Sign Lease** button and completed a real sign, ending on the full portal (charges, lease details, a
+   downloadable completed PDF, and a "Signed. Thank you!" confirmation) — the same tab dashboard the
+   pre-existing lease-agreements feature already had, now reached through this update's new front door.
+2. **Two real bugs in the verification *script*, not the app**, worth naming so "19/19 passing" doesn't
+   read as "nothing went wrong the first time." The dashboard's generic invite-renter modal uses a plain
+   `<input name="phone">`, not the country-code phone widget the renter-facing signup/accept-invite
+   screens use, so a selector written against the wrong widget timed out; and an invalid mixed
+   CSS/Playwright selector threw outright. Both were script mistakes, fixed by checking the actual
+   rendered markup rather than assuming it matched a different screen's widget.
+3. **A real, confirmed-intentional behavior — not a bug — worth recording so it isn't mistaken for one
+   later.** After the owner sent the lease agreement, changing the renter's tab to `#/` via a bare hash
+   update kept showing the stale "not assigned yet" state instead of the new sign button. Reading
+   `renter.js`'s own `hashchange` handler confirmed this is by design: once signed in, a bare hash
+   change re-renders from whatever's already cached in memory rather than re-fetching from the server —
+   consistent with this whole app's "manual refresh, not live updates" philosophy (the same reason the
+   Unassigned Renters panel above has its own explicit Refresh button rather than polling). A genuine
+   page reload re-fetches and picks the change up immediately, which is what an actual returning renter
+   would do. Fixed the test to reload rather than just changing the hash; nothing in the app changed.
+4. **What each side is actually shown, not just what the API returns**, checked directly in the
+   rendered page: the SMS modal's "not configured" notice, the signup screen's Show/Hide toggles
+   (confirmed the field itself switches between `type="password"` and `type="text"`, not just that the
+   button is present), the Unassigned Renters search box narrowing the visible rows without submitting
+   anything, and the waiting screen never rendering any owner-facing figure or label at any point along
+   the way.
+5. **No new console/page errors** were observed for the duration of the run, checked by listening for
+   the whole run rather than only where a problem was expected.
+
+The run's 13 screenshots (the SMS modal, the Unassigned Renters panel, both new renter screens, the
+verification step, both waiting-screen states, and the completed portal) were reviewed individually
+afterward for actual visual correctness — layout, spacing, legible text — not just that a selector
+found what it expected.
+
 ---
 
 ## 9. Security notes
@@ -1017,6 +1310,23 @@ actually connected (see "Real signing: what's actually implemented" in §5).
   table (`renter_tokens`), each purpose with its own expiry (30 minutes to 14 days depending on
   which); issuing a new one immediately invalidates any earlier unused one of the same purpose, so
   only the most recently sent link ever works.
+- **A renter session enforces a real sliding inactivity timeout** (30 minutes by default,
+  `RENTER_SESSION_IDLE_TIMEOUT_MINUTES` to change it) on every single authenticated request, checked
+  and refreshed server-side — not a client-side timer that a modified or replayed request could ignore.
+  There is deliberately no "Remember Me": the session cookie carries no `Max-Age`, and nothing about
+  this app treats "the browser was closed" as a guarantee it can't actually verify. See "Signing in,
+  and the renter session model" in §4 for the full reasoning.
+- **A renter's own password can never be used to sign in until their email is verified** —
+  `POST /api/renter/login` checks `email_verified_at`, not just the password, closing a real gap where
+  self-serve sign-up (§4) could otherwise be used to set a password on an existing renter's identity and
+  immediately log in as them. See "A real security gap, found and closed" in §8 for exactly what this
+  closes and how it was found.
+- **Twilio's SMS delivery-status webhook is signature-verified before anything in it is trusted** —
+  `X-Twilio-Signature` (HMAC-SHA1 keyed by your Twilio Auth Token, Twilio's own documented algorithm),
+  checked with a timing-safe comparison, the same posture `server/routes/webhooks.js` already takes for
+  the payment provider. A missing or wrong signature is rejected outright, and a delivery status can
+  only move forward — a terminal `delivered`/`failed`/`undelivered` status is never regressed by a
+  retried or out-of-order callback. See "Sending renter invitations by SMS" in §4.
 - Every write to money, leases, and archival/deletion actions is recorded in an append-only audit
   log (`audit_log` table: who, what, before/after, when) — nothing here is "fire and forget."
   There's no UI to browse it yet, but the data is there (`SELECT * FROM audit_log ORDER BY id DESC`).
@@ -1165,12 +1475,17 @@ server/
                             paymentProvider.js  mock payment processor (§6)
                             bankProvider.js     real Plaid REST client (§7)
                             storageStatus.js    ephemeral-host/misconfigured-persistence detection (§9)
-                            renterAuth.js       renter session/token issuance — separate from owner
-                                                  sessions by design (§9)
+                            renterAuth.js       renter session/token issuance — sliding inactivity
+                                                  timeout, no Remember Me, separate from owner
+                                                  sessions by design (§4/§9)
                             renters.js          renter/lease-renter data access, incl. what makes a
                                                   renter "Active" vs "Not invited" (§4)
                             renterAccess.js     what a signed-in renter may see (documents, charges) —
                                                   the enforced source of truth for sharing (§4)
+                            smsProvider.js      real Twilio SMS client + status-callback signature
+                                                  verification (§4/§9)
+                            connectionCode.js   short shareable codes for self-serve renter sign-up (§4)
+                            phone.js            E.164 phone validation shared by sign-up and SMS (§4)
                             pdf.js              zero-dependency PDF writer used for statements (§4/§8)
                             statements.js       statement generation/PDF-rendering pipeline (§4/§8)
                             leaseAgreements.js  agreement lifecycle, signing, freeze/void-replace,
@@ -1181,10 +1496,13 @@ server/
                                                   built on pdf.js's base-14 font metrics (§5)
   routes/                one file per resource (properties, leases, financials, tenantPortal,
                             bankAccounts, bankConnections, paymentLinks, systemStatus, …), plus:
-                            renterAuth.js       renter sign-up/login/invite-accept + tokens (§4)
-                            renterManagement.js owner-facing add/invite/remove-renter endpoints (§4)
+                            renterAuth.js       renter sign-up/login/invite-accept + tokens, incl. the
+                                                  email-verified-before-login gate (§4/§8/§9)
+                            renterManagement.js owner-facing add/invite/remove-renter endpoints, the
+                                                  SMS-invite route, and Unassigned Renters (§4)
                             renterPortal.js     the signed-in renter's own API — balance, documents,
                                                   maintenance, statements (§4)
+                            smsWebhooks.js      Twilio delivery-status callback handler (§4/§9)
                             statements.js       generate/list/share/email/delete statements (§4/§8)
                             leaseAgreements.js  owner + renter HTTP surface: prepare/preview/finalize,
                                                   sign/decline/request-correction, remind/void, audit,
@@ -1193,14 +1511,17 @@ server/
 public/
   index.html + js/       owner-facing single-page app (hash-based routing, no build step)
                             components.js  shared UI primitives (Modal/Toast/PhotoPicker/…)
+                            phone.js  the country-code + national-number phone input widget (§4)
                             leaseAgreementUI.js  shared owner + renter lease-agreement UI: invite/
-                              assign modals, the Unassigned Renters panel, template manager, the
-                              prep-and-sign flow, the renter's Action Required card, and the audit
-                              modal (§5)
+                              assign modals (incl. the SMS-invite modal), the Unassigned Renters panel,
+                              template manager, the prep-and-sign flow, and the audit modal (§4/§5)
                             views/bankAccounts.js  Bank Accounts page + per-property section,
                               including the Plaid Link browser flow
+                            views/dashboard.js  portfolio dashboard, incl. the Renters card
+                              (SMS invite / connection code) and the Unassigned Renters panel (§4)
   tenant.html + tenant.js  the payment-link surface (`/pay/link/:token`) — no account, one-off (§2)
-  renter.html + renter.js  the renter portal (`/renter`) — full renter accounts, sign-in required (§4)
+  renter.html + renter.js  the renter portal (`/renter`) — dedicated login/sign-up, the "Waiting on
+                             assignment" screen, and the full per-lease portal (§4)
 test/
   unit.test.js           pure logic: money, dates, rent-status
   integration.test.js    full HTTP flows against a real (temp) database
@@ -1217,6 +1538,8 @@ test/
   pdf.test.js            the PDF writer itself, including the encoding bug it caught (§8)
   leaseAgreements.test.js  invite-to-signed-lease end to end: assignment, templates, prep, signing,
                              audit trail, completion sync, former-tenant isolation (§5/§8)
+  renterWorkflowUpdate.test.js  SMS invitations, the renter session model, self-serve sign-up incl.
+                             the email-verification security fix, and Unassigned Renters (§4/§8)
 ```
 
 No bundler, no framework, no build step — edit a `.js` file under `public/` and reload the page.

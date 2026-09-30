@@ -268,6 +268,24 @@ tr:last-child td { border-bottom: none; }
 .section-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 12px; flex-wrap: wrap; }
 .section-heading h2 { font-size: 19px; }
 
+/* ---- Collapsible panel (e.g. Unassigned Renters) ---- */
+.collapsible-bar {
+  background: none; border: none; padding: 18px 22px; width: 100%;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  cursor: pointer; text-align: left; border-radius: var(--radius);
+}
+.collapsible-bar:hover { background: var(--accent-soft); }
+.collapsible-chevron { display: inline-block; transition: transform .15s ease; color: var(--ink-soft); font-size: 12px; }
+.collapsible-chevron.open { transform: rotate(180deg); }
+.collapsible-body { padding: 0 22px 20px; }
+/* overflow:auto (not overflow-x/-y set separately) so both axes end up
+   explicitly auto — mixing an explicit axis with the visible default here
+   would make the browser silently promote the visible one to auto anyway,
+   which is more surprising than just setting both up front. */
+.scroll-list { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+.scroll-list table { width: max-content; min-width: 100%; }
+.scroll-list thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+
 /* ---- Forms ---- */
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
 .field label { font-size: 12px; color: var(--ink-soft); font-weight: 600; }

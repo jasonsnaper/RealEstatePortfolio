@@ -241,6 +241,32 @@ function wireAction(btn, onAction, opts) {
   });
 }
 
+/** A password <input> plus a "Show"/"Hide" toggle button, for any form that
+ * asks someone to choose or re-type their own password (renter sign-up,
+ * accept-invite, reset-password). `name` becomes the input's name attribute;
+ * `autocomplete` should be "new-password" for a password being SET and
+ * "current-password" for one being entered to sign in. Call wirePasswordToggles
+ * once after inserting the markup to make the button actually work. */
+function passwordToggleHtml(name, autocomplete) {
+  return (
+    '<div class="password-field" style="position:relative;">' +
+      '<input name="' + escapeHtml(name) + '" type="password" required minlength="8" maxlength="200" autocomplete="' + escapeHtml(autocomplete || 'new-password') + '" style="padding-right:60px;width:100%;">' +
+      '<button type="button" class="link password-toggle-btn" data-toggle-for="' + escapeHtml(name) + '" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:12px;">Show</button>' +
+    '</div>'
+  );
+}
+function wirePasswordToggles(root) {
+  qsa('[data-toggle-for]', root).forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const input = qs('[name="' + btn.dataset.toggleFor + '"]', root);
+      if (!input) return;
+      const showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      btn.textContent = showing ? 'Show' : 'Hide';
+    });
+  });
+}
+
 /** Serialize a <form>'s named fields into a plain object. Checkboxes become booleans. */
 function formData(form) {
   const out = {};

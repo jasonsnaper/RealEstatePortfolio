@@ -7,7 +7,11 @@ const Api = (function () {
   // status) because "retry" makes sense for the first two but a 4xx usually
   // won't change on retry alone.
   class ApiError extends Error {
-    constructor(status, message, code) { super(message); this.status = status; this.code = code || 'http'; }
+    // `data` is the full parsed JSON error body (when the server sent one),
+    // for the rare caller that needs more than the message — e.g. a failed
+    // SMS send still returns a real sms_messages row to display, not just an
+    // error string. Most callers only ever need .message/.status/.code.
+    constructor(status, message, code, data) { super(message); this.status = status; this.code = code || 'http'; this.data = data; }
   }
 
   const DEFAULT_TIMEOUT_MS = 20000;
@@ -41,7 +45,7 @@ const Api = (function () {
     if (text) { try { data = JSON.parse(text); } catch (e) { data = text; } }
     if (!res.ok) {
       const message = (data && data.error) || ('Request failed (' + res.status + ')');
-      throw new ApiError(res.status, message, res.status >= 500 ? 'server' : 'http');
+      throw new ApiError(res.status, message, res.status >= 500 ? 'server' : 'http', data);
     }
     return data;
   }

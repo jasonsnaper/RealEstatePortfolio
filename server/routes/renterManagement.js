@@ -2,7 +2,16 @@ const { apiError, sendJson } = require('../lib/router');
 const { requireAuth, getOwnedPropertyOr404, runInTransaction, logAudit } = require('../lib/helpers');
 const { createRenterToken } = require('../lib/renterAuth');
 const { findOrCreateRenter, serializeRenter } = require('../lib/renters');
+const { normalizePhoneInput } = require('../lib/phone');
+const smsProvider = require('../lib/smsProvider');
 const { serializeLease } = require('./leases');
+
+function serializeSmsMessage(row) {
+  return {
+    id: row.id, toPhone: row.to_phone, status: row.status, errorMessage: row.error_message,
+    createdAt: row.created_at, updatedAt: row.updated_at,
+  };
+}
 
 const ROLES = ['primary', 'co_renter'];
 
@@ -111,6 +120,77 @@ function registerRenterManagementRoutes(router, { db, appBaseUrl }) {
     console.log(`\n[Renter invitation] ${renter.name} <${renter.email}> invited (no property assigned yet). Link (valid 14 days): ${url}\n`);
     logAudit(db, { actorType: 'owner', actorId: owner.id, action: 'invite_renter', entityType: 'renter', entityId: renter.id, after: { generic: true } });
     sendJson(res, 201, { url, expiresInDays: 14, renter: serializeRenter(renter) });
+  });
+
+  // Texts an ALREADY-GENERATED invitation link (from POST /api/leases/:id/
+  // renters/:renterId/invite or POST /api/renters/invite above — either one,
+  // this doesn't care which) to the phone number the owner reviewed. Never
+  // creates a new invitation itself — the owner always sees the exact link
+  // (via Copy Link) before any text is sent, and this only re-sends that
+  // same secret link over a different channel. This is the ONE place an SMS
+  // actually goes out, so it's also the one place that ever writes a truthful
+  // sms_messages row — see server/lib/smsProvider.js for what "truthful"
+  // means here: a real Twilio send, or an honest 503 if it isn't configured,
+  // never a fabricated "sent".
+  router.post('/api/renters/:renterId/send-invite-sms', async (req, res) => {
+    const owner = requireAuth(db, req);
+    const renter = db.prepare('SELECT * FROM renters WHERE id = ? AND owner_id = ?').get(req.params.renterId, owner.id);
+    if (!renter) throw apiError(404, 'Renter not found');
+    if (renter.password_hash) throw apiError(409, `${renter.name} already has a portal account — there is no pending invitation to text.`);
+
+    const tokenRow = db.prepare(`
+      SELECT * FROM renter_tokens WHERE renter_id = ? AND purpose = 'invitation' AND used_at IS NULL AND expires_at > datetime('now')
+      ORDER BY created_at DESC LIMIT 1
+    `).get(renter.id);
+    if (!tokenRow) throw apiError(409, 'Generate the invitation link first (Send Renter Portal Link), then send it by text.');
+
+    const { phone, message } = req.body;
+    const normalizedPhone = normalizePhoneInput(phone);
+    if (!normalizedPhone) throw apiError(400, 'Enter a valid phone number, including country code.');
+    if (!message || !String(message).trim()) throw apiError(400, 'The text message can’t be empty.');
+
+    const url = `${appBaseUrl}/renter#/accept-invite/${tokenRow.token}`;
+    if (!String(message).includes(url)) {
+      throw apiError(400, 'The message must include the invitation link exactly as shown — edit around it, not over it.');
+    }
+
+    if (!smsProvider.isLiveModeConfigured()) {
+      const row = db.prepare(`
+        INSERT INTO sms_messages (owner_id, renter_id, purpose, to_phone, body, status) VALUES (?, ?, 'invitation', ?, ?, 'not_configured')
+      `).run(owner.id, renter.id, normalizedPhone, message);
+      const saved = db.prepare('SELECT * FROM sms_messages WHERE id = ?').get(row.lastInsertRowid);
+      return sendJson(res, 200, { sms: serializeSmsMessage(saved), provider: smsProvider.describeProvider(), url });
+    }
+
+    let sendResult;
+    try {
+      sendResult = await smsProvider.sendSms({ to: normalizedPhone, body: message, appBaseUrl });
+    } catch (err) {
+      const row = db.prepare(`
+        INSERT INTO sms_messages (owner_id, renter_id, purpose, to_phone, body, status, error_message) VALUES (?, ?, 'invitation', ?, ?, 'failed', ?)
+      `).run(owner.id, renter.id, normalizedPhone, message, err.message);
+      const saved = db.prepare('SELECT * FROM sms_messages WHERE id = ?').get(row.lastInsertRowid);
+      logAudit(db, { actorType: 'owner', actorId: owner.id, action: 'invite_sms_failed', entityType: 'renter', entityId: renter.id, after: { error: err.message } });
+      return sendJson(res, err.statusCode || 502, { error: err.message, sms: serializeSmsMessage(saved) });
+    }
+
+    const row = db.prepare(`
+      INSERT INTO sms_messages (owner_id, renter_id, purpose, to_phone, body, provider_message_id, status, error_message)
+      VALUES (?, ?, 'invitation', ?, ?, ?, ?, ?)
+    `).run(owner.id, renter.id, normalizedPhone, message, sendResult.providerMessageId, sendResult.status, sendResult.errorMessage);
+    const saved = db.prepare('SELECT * FROM sms_messages WHERE id = ?').get(row.lastInsertRowid);
+    logAudit(db, { actorType: 'owner', actorId: owner.id, action: 'invite_sms_sent', entityType: 'renter', entityId: renter.id, after: { toPhone: normalizedPhone } });
+    sendJson(res, 201, { sms: serializeSmsMessage(saved), callbacksReachable: sendResult.callbacksReachable, url });
+  });
+
+  // Lets the invite modal poll for a delivery status update (queued -> sent ->
+  // delivered/failed) without re-sending anything — see server/routes/
+  // smsWebhooks.js for what actually moves a message past "sent".
+  router.get('/api/sms-messages/:id', async (req, res) => {
+    const owner = requireAuth(db, req);
+    const row = db.prepare('SELECT * FROM sms_messages WHERE id = ? AND owner_id = ?').get(req.params.id, owner.id);
+    if (!row) throw apiError(404, 'Message not found');
+    sendJson(res, 200, serializeSmsMessage(row));
   });
 
   // Renters with an account but no lease_renters row at all — either just

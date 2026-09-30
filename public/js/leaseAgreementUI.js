@@ -59,19 +59,113 @@ const LeaseAgreementUI = (function () {
   // "no lease yet" empty state)
   // ---------------------------------------------------------------------------
 
-  /** Same copy-link pattern as property.js's per-lease invite modal — no email/SMS provider is connected, so the owner copies and sends this themselves. */
+  const SMS_STATUS_LABEL = {
+    queued: 'Sending…', accepted: 'Sending…', sending: 'Sending…',
+    sent: 'Sent', delivered: 'Delivered', failed: 'Failed', undelivered: 'Failed',
+    not_configured: 'Not sent',
+  };
+  const SMS_STATUS_CLASS = {
+    queued: 'info', accepted: 'info', sending: 'info', sent: 'shared', delivered: 'shared',
+    failed: 'sample', undelivered: 'sample', not_configured: 'warn',
+  };
+  function defaultInviteMessage(url, expiresInDays) {
+    return `You're invited to set up your renter portal account. Use this secure link: ${url} (expires in ${expiresInDays} days)`;
+  }
+
+  /** The invitation-link modal: always shows the link itself (Copy Link,
+   * unconditionally available — this never depends on SMS being configured
+   * or working), plus an SMS section that reviews the exact phone number and
+   * message BEFORE anything sends, and afterward shows the real delivery
+   * status returned by the provider — never a fabricated "Sent". See
+   * server/lib/smsProvider.js for what "real" means when nothing is
+   * configured yet (an honest, specific setup notice instead). */
   function renderInviteLinkModal(renter, link) {
+    const message = defaultInviteMessage(link.url, link.expiresInDays);
     const modal = Modal.open(
       '<h2>Invite ' + escapeHtml(renter.name) + '</h2>' +
       '<p class="field-hint">Share this secure link so they can create their portal account. It expires in ' + link.expiresInDays + ' days — their account and access will persist regardless of that. Until you assign them to a property, they will appear under "Unassigned Renters".</p>' +
-      '<div class="field"><input readonly value="' + escapeHtml(link.url) + '" onclick="this.select()"></div>' +
-      '<div class="modal-actions"><button type="button" class="btn" id="la-copy-invite">Copy link</button><button type="button" class="btn primary" data-act="close">Done</button></div>'
+      '<div class="field"><label>Invitation link</label><input readonly value="' + escapeHtml(link.url) + '" onclick="this.select()"></div>' +
+      '<div class="modal-actions" style="margin-bottom:18px;"><button type="button" class="btn" id="la-copy-invite">Copy link</button></div>' +
+      '<hr style="border:none;border-top:1px solid var(--line);margin:4px 0 18px;">' +
+      '<h3 style="font-size:15px;margin:0 0 10px;">Or send it by text message</h3>' +
+      '<div class="field"><label>Phone number</label>' + Phone.fieldHtml('smsPhone', renter.phone || '') + '</div>' +
+      '<div class="field"><label>Message</label><textarea id="la-sms-message" rows="3">' + escapeHtml(message) + '</textarea>' +
+        '<span class="field-hint">Edit the wording if you like, but keep the link itself intact.</span></div>' +
+      '<div id="la-sms-status"></div>' +
+      '<div class="modal-actions">' +
+        '<button type="button" class="btn" data-act="close">Done</button>' +
+        '<button type="button" class="btn primary" id="la-send-sms">Send text</button>' +
+      '</div>'
     );
     modal.querySelector('[data-act="close"]').addEventListener('click', () => Modal.close(true));
     modal.querySelector('#la-copy-invite').addEventListener('click', async () => {
       try { await navigator.clipboard.writeText(link.url); Toast.show('Link copied.', 'success'); }
       catch (e) { Toast.show('Could not copy automatically — select and copy the link manually.', 'error'); }
     });
+    Phone.wire(modal, 'smsPhone');
+
+    const sendBtn = modal.querySelector('#la-send-sms');
+    const statusEl = modal.querySelector('#la-sms-status');
+    sendBtn.addEventListener('click', async () => {
+      const phone = modal.querySelector('input[name="smsPhone"]').value;
+      const body = modal.querySelector('#la-sms-message').value;
+      if (!Phone.isValid(phone)) { statusEl.innerHTML = '<div class="banner error">Enter a valid phone number, including country code.</div>'; return; }
+      if (!body.includes(link.url)) { statusEl.innerHTML = '<div class="banner error">The message must still include the invitation link.</div>'; return; }
+      setButtonBusy(sendBtn, true, 'Sending…');
+      statusEl.innerHTML = '';
+      try {
+        const result = await Api.post('/api/renters/' + renter.id + '/send-invite-sms', { phone, message: body });
+        renderSmsStatus(statusEl, result.sms);
+        if (result.sms.status === 'not_configured') {
+          statusEl.innerHTML += '<div class="banner warn">' + escapeHtml(result.provider && result.provider.notice ? result.provider.notice : 'SMS isn’t set up on this server yet — use Copy Link instead.') + '</div>';
+        } else {
+          if (result.callbacksReachable === false) {
+            statusEl.innerHTML += '<div class="field-hint">This server can’t receive delivery confirmations yet (see the README), so this will stay at "Sent" even once it’s actually delivered.</div>';
+          }
+          pollSmsStatus(result.sms.id, statusEl);
+        }
+      } catch (err) {
+        // A failed send still recorded a real sms_messages row server-side
+        // (see POST .../send-invite-sms) — show that specific failure rather
+        // than just a generic error banner, when we have it.
+        if (err && err.data && err.data.sms) renderSmsStatus(statusEl, err.data.sms);
+        else statusEl.innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>';
+      } finally {
+        setButtonBusy(sendBtn, false);
+      }
+    });
+  }
+
+  function renderSmsStatus(el, sms) {
+    const label = SMS_STATUS_LABEL[sms.status] || sms.status;
+    const cls = SMS_STATUS_CLASS[sms.status] || 'info';
+    el.innerHTML =
+      '<div class="banner ' + cls + '">' +
+        '<strong>' + escapeHtml(label) + '</strong> — to ' + escapeHtml(sms.toPhone) +
+        (sms.errorMessage ? ': ' + escapeHtml(sms.errorMessage) : '') +
+      '</div>';
+  }
+
+  /** A few quick checks right after sending, so a fast delivery (or failure)
+   * shows up without the owner having to do anything — then stops; the
+   * status is never wrong, just possibly stale, and server/routes/
+   * smsWebhooks.js keeps updating the underlying row regardless of whether
+   * anyone is still watching this modal. */
+  function pollSmsStatus(smsId, el) {
+    // 'sent' is deliberately NOT in here — Twilio can still move a 'sent'
+    // message on to 'delivered' or 'undelivered' moments later, so polling
+    // keeps going through the full attempt budget either way, same as
+    // 'queued'/'sending'. Only a truly final status ends it early.
+    const TERMINAL = ['delivered', 'failed', 'undelivered', 'not_configured'];
+    let attempts = 0;
+    const timer = setInterval(async () => {
+      attempts++;
+      let sms;
+      try { sms = await Api.get('/api/sms-messages/' + smsId); } catch (e) { clearInterval(timer); return; }
+      if (!el.isConnected) { clearInterval(timer); return; } // modal closed
+      renderSmsStatus(el, sms);
+      if (TERMINAL.includes(sms.status) || attempts >= 8) clearInterval(timer);
+    }, 2500);
   }
 
   /** The generic (lease-less) "Invite Renter" action — dashboard.js. */
@@ -142,35 +236,142 @@ const LeaseAgreementUI = (function () {
   }
 
   // ---------------------------------------------------------------------------
-  // Dashboard: "Unassigned Renters" panel
+  // Dashboard: "Unassigned Renters" panel — a collapsible bar (click to
+  // expand/collapse) so it stays visible with an at-a-glance count without
+  // dominating the dashboard once the list gets long. `expanded`/`q` (the
+  // search box's text) live in this module-level object rather than in the
+  // DOM, so they survive the full-dashboard re-render that a Refresh or an
+  // Assign both trigger (dashboard.js rebuilds #view-root from scratch on
+  // every render() call) — without this the panel would silently re-collapse
+  // and clear the search box every time the owner acted on it.
   // ---------------------------------------------------------------------------
 
-  function unassignedPanelHtml(renters) {
-    if (!renters || renters.length === 0) return '';
+  let unassignedState = { expanded: true, q: '' };
+
+  function renterStatusBadge(r) {
+    if (!r.hasAccount) return '<span class="badge">Invited</span>';
+    if (!r.emailVerified) return '<span class="badge warn">Pending verification</span>';
+    return '<span class="field-hint">—</span>';
+  }
+
+  function unassignedRowHtml(r) {
+    const searchBlob = (r.name + ' ' + (r.email || '') + ' ' + (r.phone || '')).toLowerCase();
     return (
-      '<div class="card panel" style="margin-bottom:22px;" id="unassigned-renters-panel">' +
-        '<div class="section-heading"><h2>Unassigned renters</h2></div>' +
-        '<p class="field-hint" style="margin-top:-6px;">Accepted an invitation but not yet on a lease.</p>' +
-        renters.map((r) => (
-          '<div class="list-row">' +
-            '<span>' + escapeHtml(r.name) + (r.email ? ' <span class="field-hint">' + escapeHtml(r.email) + '</span>' : '') + '</span>' +
-            '<button class="btn small" data-assign-renter="' + r.id + '">Assign to property</button>' +
-          '</div>'
-        )).join('') +
+      '<tr data-renter-row="' + r.id + '" data-search="' + escapeHtml(searchBlob) + '">' +
+        '<td>' + escapeHtml(r.name) + '</td>' +
+        '<td>' + (r.phone ? escapeHtml(r.phone) : '<span class="field-hint">—</span>') + '</td>' +
+        '<td>' + (r.email ? escapeHtml(r.email) : '<span class="field-hint">—</span>') + '</td>' +
+        '<td>' + (r.createdAt ? formatDate(String(r.createdAt).split(' ')[0]) : '<span class="field-hint">—</span>') + '</td>' +
+        '<td>' + renterStatusBadge(r) + '</td>' +
+        '<td><button type="button" class="btn small" data-assign-renter="' + r.id + '">Assign to Property</button></td>' +
+      '</tr>'
+    );
+  }
+
+  // The Refresh button stays visible even with zero renters currently
+  // listed — that's precisely when it matters most, since a brand-new
+  // sign-up arriving moments ago is exactly what a stale empty list would
+  // hide. Only the search box (nothing yet to search) is skipped.
+  function unassignedPanelContentHtml(renters) {
+    const hasRenters = renters.length > 0;
+    return (
+      '<div class="collapsible-body">' +
+        '<div class="toolbar" style="margin-bottom:14px;">' +
+          (hasRenters
+            ? '<input type="search" id="unassigned-search-input" placeholder="Search by name, email, or phone…" value="' + escapeHtml(unassignedState.q) + '">'
+            : '<span class="field-hint">No unassigned renters.</span>') +
+          '<span class="spacer"></span>' +
+          '<button type="button" class="btn small" id="unassigned-refresh-btn">Refresh</button>' +
+        '</div>' +
+        (hasRenters
+          ? '<div class="scroll-list">' +
+              '<table><thead><tr><th>Full name</th><th>Phone</th><th>Email</th><th>Signup date</th><th>Status</th><th></th></tr></thead><tbody>' +
+                renters.map(unassignedRowHtml).join('') +
+                '<tr id="unassigned-no-match" style="display:none;"><td colspan="6" class="field-hint" style="text-align:center;padding:20px;">No renters match your search.</td></tr>' +
+              '</tbody></table>' +
+            '</div>'
+          : '') +
+      '</div>'
+    );
+  }
+
+  /** The bar + (when expanded) its body — split out from unassignedPanelHtml
+   * so a toggle/repaint can regenerate just this inner HTML from the renters
+   * array already in hand, with no extra network round-trip. */
+  function unassignedPanelBodyHtml(renters) {
+    const count = renters.length;
+    return (
+      '<button type="button" class="collapsible-bar" id="unassigned-toggle-btn" aria-expanded="' + (unassignedState.expanded ? 'true' : 'false') + '">' +
+        '<span style="display:flex;align-items:center;gap:10px;">' +
+          '<span style="font-size:19px;">Unassigned Renters</span>' +
+          '<span class="badge' + (count > 0 ? ' warn' : '') + '">' + count + '</span>' +
+        '</span>' +
+        '<span class="collapsible-chevron' + (unassignedState.expanded ? ' open' : '') + '" aria-hidden="true">▾</span>' +
+      '</button>' +
+      (unassignedState.expanded ? unassignedPanelContentHtml(renters) : '')
+    );
+  }
+
+  // Always rendered (never hidden when the list is empty) — it's meant to be
+  // a permanent, clearly-visible fixture of the dashboard so a fresh sign-up
+  // is never something the owner has to know to go looking for.
+  function unassignedPanelHtml(renters) {
+    renters = renters || [];
+    return (
+      '<div class="card" style="margin-bottom:22px;" id="unassigned-renters-panel">' +
+        unassignedPanelBodyHtml(renters) +
       '</div>'
     );
   }
 
   function wireUnassignedPanel(root, renters, onChange) {
+    renters = renters || [];
     const panel = qs('#unassigned-renters-panel', root);
     if (!panel) return;
-    qsa('[data-assign-renter]', panel).forEach((btn) => btn.addEventListener('click', async () => {
-      const renter = renters.find((r) => String(r.id) === btn.dataset.assignRenter);
-      let properties;
-      try { properties = await Api.get('/api/properties'); } catch (err) { Toast.show(describeApiError(err), 'error'); return; }
-      if (properties.length === 0) { Toast.show('Add a property first.', 'error'); return; }
-      openAssignRenterModal({ renter, properties, onChange: () => onChange() });
-    }));
+
+    function repaint() {
+      panel.innerHTML = unassignedPanelBodyHtml(renters);
+      wireBody();
+    }
+
+    function wireBody() {
+      qs('#unassigned-toggle-btn', panel).addEventListener('click', () => {
+        unassignedState.expanded = !unassignedState.expanded;
+        repaint();
+      });
+      if (!unassignedState.expanded) return;
+
+      const refreshBtn = qs('#unassigned-refresh-btn', panel);
+      if (refreshBtn) wireAction(refreshBtn, async () => { await onChange(); }, { busyLabel: 'Refreshing…' });
+
+      const searchInput = qs('#unassigned-search-input', panel);
+      if (searchInput) {
+        const noMatchRow = qs('#unassigned-no-match', panel);
+        const applyFilter = () => {
+          unassignedState.q = searchInput.value;
+          const q = searchInput.value.trim().toLowerCase();
+          let anyVisible = false;
+          qsa('[data-renter-row]', panel).forEach((row) => {
+            const match = !q || row.dataset.search.indexOf(q) !== -1;
+            row.style.display = match ? '' : 'none';
+            if (match) anyVisible = true;
+          });
+          if (noMatchRow) noMatchRow.style.display = anyVisible ? 'none' : '';
+        };
+        searchInput.addEventListener('input', applyFilter);
+        applyFilter();
+      }
+
+      qsa('[data-assign-renter]', panel).forEach((btn) => btn.addEventListener('click', async () => {
+        const renter = renters.find((r) => String(r.id) === btn.dataset.assignRenter);
+        let properties;
+        try { properties = await Api.get('/api/properties'); } catch (err) { Toast.show(describeApiError(err), 'error'); return; }
+        if (properties.length === 0) { Toast.show('Add a property first.', 'error'); return; }
+        openAssignRenterModal({ renter, properties, onChange: () => onChange() });
+      }));
+    }
+
+    wireBody();
   }
 
   // ---------------------------------------------------------------------------
@@ -627,6 +828,23 @@ const LeaseAgreementUI = (function () {
     });
   }
 
+  // Renter session expiring mid-signature is exactly the case the spec calls
+  // out by name ("require reauthentication after session expiry without
+  // losing a saved draft") — this function is only ever reached from the
+  // renter portal (openRenterSignModal below is never called from the owner
+  // dashboard), so it's safe to bake the renter's own recovery path directly
+  // in here rather than threading a callback through from renter.js. A full
+  // page reload (rather than trying to reach into renter.js's internal
+  // router state from this separate file) is what actually re-runs boot(),
+  // which is what picks this draft back up — see renter.js's boot().
+  const RENTER_SIGN_DRAFT_KEY = 'renterSignDraft';
+  function saveRenterSignDraftAndRedirect(agreementId, signatureText) {
+    try { sessionStorage.setItem(RENTER_SIGN_DRAFT_KEY, JSON.stringify({ agreementId, signatureText })); } catch (e) { /* ignore */ }
+    try { sessionStorage.setItem('renterLoginNotice', 'Your session expired before your signature was submitted. Sign in again to pick up right where you left off.'); } catch (e) { /* ignore */ }
+    location.hash = '#/login';
+    location.reload();
+  }
+
   function openRenterSignModal(agreement, onChange) {
     const modal = Modal.open(
       '<h2>Review &amp; sign your lease</h2>' +
@@ -659,7 +877,16 @@ const LeaseAgreementUI = (function () {
       const signatureText = qs('#la-r-signature', modal).value;
       if (!consent) throw new Error('You must check the box to explicitly consent to sign electronically.');
       if (!signatureText.trim()) throw new Error('Type your full legal name to sign.');
-      await Api.post('/api/renter/agreements/' + agreement.id + '/sign', { consent, signatureText });
+      try {
+        await Api.post('/api/renter/agreements/' + agreement.id + '/sign', { consent, signatureText });
+      } catch (err) {
+        // Session timed out or otherwise expired between opening this modal
+        // and clicking Sign — the typed signature is saved and restored
+        // automatically after signing back in (see saveRenterSignDraftAndRedirect
+        // above and renter.js's boot()), never just dropped on the floor.
+        if (err && err.status === 401) { saveRenterSignDraftAndRedirect(agreement.id, signatureText); return; }
+        throw err;
+      }
       await Modal.close(true);
       Toast.show('Signed. Thank you!', 'success');
       if (onChange) onChange();
