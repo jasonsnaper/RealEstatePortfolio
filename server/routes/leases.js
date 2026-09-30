@@ -80,8 +80,14 @@ function registerLeaseRoutes(router, { db }) {
     if (!b.tenantName || !b.startDate || !b.rent) {
       throw apiError(400, 'Tenant name, start date, and rent are required');
     }
-    const activeExisting = db.prepare("SELECT id FROM leases WHERE property_id = ? AND status = 'active'").get(property.id);
-    if (activeExisting) throw apiError(409, 'This property already has an active lease. End it before starting a new one.');
+    // 'draft' counts as a conflict too, not just 'active' — a property with a
+    // pending, unsigned lease (created via the renter-assignment flow; see
+    // server/routes/renterManagement.js) is already spoken for, so a second
+    // lease shouldn't be startable on top of it any more than a second
+    // active one could (this is what "prevent conflicting property
+    // assignments and duplicate billing" means at the data layer).
+    const conflicting = db.prepare("SELECT id FROM leases WHERE property_id = ? AND status IN ('active', 'draft')").get(property.id);
+    if (conflicting) throw apiError(409, 'This property already has an active or pending lease. End or cancel it before starting a new one.');
 
     const unit = db.prepare('SELECT id FROM units WHERE property_id = ? LIMIT 1').get(property.id);
 

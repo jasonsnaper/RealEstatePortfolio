@@ -781,17 +781,31 @@ const PropertyView = (function () {
 
   // ---- Tenant & Lease ----
   async function renderTenantLease(p, container) {
-    const leases = await Api.get('/api/properties/' + propertyId + '/leases?status=active');
-    const lease = leases[0];
+    // No status filter here on purpose — a 'draft' ("Lease Pending") tenancy
+    // must still show up on this tab (as the lease-prep/signing workflow
+    // below) rather than falling through to the "No active lease" empty
+    // state. At most one of each can exist per property (both the active-lease
+    // and draft-lease creation paths enforce that), so active-or-draft is
+    // an unambiguous choice.
+    const leases = await Api.get('/api/properties/' + propertyId + '/leases');
+    const lease = leases.find((l) => l.status === 'active') || leases.find((l) => l.status === 'draft');
     currentLeaseIdCache = lease ? lease.id : null;
     if (!lease) {
-      container.innerHTML = '<div class="empty-state card panel"><h3>No active lease</h3><p>Add a lease to start tracking rent for this property.</p><button class="btn primary" id="add-lease-btn">Add lease</button></div>';
+      container.innerHTML =
+        '<div class="empty-state card panel"><h3>No active lease</h3><p>Add a lease to start tracking rent for this property, or assign a renter who already has a portal account.</p>' +
+        '<div class="btn-row" style="justify-content:center;"><button class="btn primary" id="add-lease-btn">Add lease</button><button class="btn" id="assign-existing-renter-btn">Assign existing renter</button></div></div>';
       qs('#add-lease-btn', container).addEventListener('click', () => openAddLeaseModal());
+      qs('#assign-existing-renter-btn', container).addEventListener('click', () => openAssignExistingRenterFlow(p));
       return;
     }
-    const [renters, statements] = await Promise.all([
+    if (lease.status === 'draft') {
+      await renderDraftTenantLease(p, container, lease);
+      return;
+    }
+    const [renters, statements, completedAgreementHtml] = await Promise.all([
       Api.get('/api/leases/' + lease.id + '/renters'),
       Api.get('/api/leases/' + lease.id + '/statements'),
+      LeaseAgreementUI.ownerCompletedSummaryHtml(lease.id),
     ]);
     container.innerHTML =
       '<div class="section-heading"><h2>Tenant & lease</h2><div class="btn-row">' +
@@ -815,6 +829,7 @@ const PropertyView = (function () {
       '</div>' +
       (lease.emergencyContact ? '<p><strong>Emergency contact:</strong> ' + escapeHtml(lease.emergencyContact) + '</p>' : '') +
       (lease.ownerNotes ? '<div class="banner warn"><strong>Private owner notes</strong> (never visible to tenant): ' + escapeHtml(lease.ownerNotes) + '</div>' : '') +
+      (completedAgreementHtml ? '<h3 style="font-size:15px;margin:22px 0 10px;">Lease agreement</h3>' + completedAgreementHtml : '') +
       rentersSectionHtml(renters) +
       '<h3 style="font-size:15px;margin:22px 0 10px;">Rent history</h3>' +
       lease.rentHistory.map((h) => '<div class="list-row"><span>Effective ' + formatDateShort(h.effectiveDate) + '</span><span class="money">' + centsToDisplay(h.rentCents) + '</span></div>').join('') +
@@ -843,6 +858,64 @@ const PropertyView = (function () {
     // to an active lease.
     wireRentersSection(container, lease, renters, () => renderTab(propertyCache));
     wireStatementsSection(container, lease, () => renderTab(propertyCache));
+    LeaseAgreementUI.wireOwnerCompletedSummary(container);
+  }
+
+  // A 'draft' ("Lease Pending") tenancy: no rent/charges/statements exist yet
+  // (nothing bills until the agreement completes and syncs real terms in —
+  // see syncLeaseFromCompletedAgreement), so this is a much smaller view than
+  // the active-lease one above, built around LeaseAgreementUI's prep/sign
+  // workflow. The renter can already have portal access (they were assigned
+  // here FROM "Unassigned Renters", which requires an account), but the
+  // Renters section is still shown so the owner can add a co-renter or invite
+  // one who was entered manually without an account yet.
+  async function renderDraftTenantLease(p, container, lease) {
+    const renters = await Api.get('/api/leases/' + lease.id + '/renters');
+    container.innerHTML =
+      '<div class="section-heading"><h2>Tenant & lease</h2><span class="badge warn">Lease pending</span></div>' +
+      '<div class="banner info">This tenancy is pending — nothing is billed and it won’t become active until a lease agreement is prepared and signed by both sides.</div>' +
+      '<div class="facts-grid" style="margin-bottom:22px;">' +
+        fact('Tenant', escapeHtml(lease.tenantName)) +
+        fact('Email', lease.tenantEmail ? escapeHtml(lease.tenantEmail) : '—') +
+        fact('Phone', lease.tenantPhone ? escapeHtml(lease.tenantPhone) : '—') +
+        fact('Proposed start', formatDateShort(lease.startDate)) +
+      '</div>' +
+      '<div id="la-owner-lease-section"></div>' +
+      rentersSectionHtml(renters);
+    await LeaseAgreementUI.renderOwnerLeaseSection(qs('#la-owner-lease-section', container), p, lease, () => renderTab(propertyCache));
+    wireRentersSection(container, lease, renters, () => renderTab(propertyCache));
+  }
+
+  // "Assign existing renter" from the empty state — picks from this owner's
+  // Unassigned Renters (see dashboard.js for the equivalent panel that's
+  // always visible; this is the same flow reached from a property that has
+  // no tenant at all yet).
+  async function openAssignExistingRenterFlow(property) {
+    let renters;
+    try { renters = await Api.get('/api/renters/unassigned'); } catch (err) { Toast.show(describeApiError(err), 'error'); return; }
+    if (renters.length === 0) { Toast.show('No unassigned renters yet — use "Invite Renter" on the dashboard first.', 'error'); return; }
+    if (renters.length === 1) {
+      LeaseAgreementUI.openAssignRenterModal({ renter: renters[0], properties: [property], lockedPropertyId: property.id, onChange: () => renderTab(propertyCache) });
+      return;
+    }
+    openPickUnassignedRenterModal(renters, property);
+  }
+  function openPickUnassignedRenterModal(renters, property) {
+    const modal = Modal.open(
+      '<h2>Assign existing renter</h2>' +
+      '<p class="field-hint">Choose an unassigned renter to start a pending tenancy at ' + escapeHtml(property.name) + '.</p>' +
+      renters.map((r) => (
+        '<div class="list-row"><span>' + escapeHtml(r.name) + (r.email ? ' <span class="field-hint">' + escapeHtml(r.email) + '</span>' : '') + '</span>' +
+        '<button class="btn small" data-pick-renter="' + r.id + '">Assign</button></div>'
+      )).join('') +
+      '<div class="modal-actions"><button type="button" class="btn" data-act="close">Close</button></div>'
+    );
+    modal.querySelector('[data-act="close"]').addEventListener('click', Modal.close);
+    qsa('[data-pick-renter]', modal).forEach((btn) => btn.addEventListener('click', async () => {
+      const renter = renters.find((r) => String(r.id) === btn.dataset.pickRenter);
+      await Modal.close(true);
+      LeaseAgreementUI.openAssignRenterModal({ renter, properties: [property], lockedPropertyId: property.id, onChange: () => renderTab(propertyCache) });
+    }));
   }
 
   // ---- Renters (portal access) ----

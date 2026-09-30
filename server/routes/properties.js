@@ -23,6 +23,12 @@ function serializeProperty(db, property) {
   const bankAccounts = bankAccountRows.map((r) => serializeAccount(db, r));
 
   const lease = db.prepare("SELECT * FROM leases WHERE property_id = ? AND status = 'active' LIMIT 1").get(property.id);
+  // A draft ("Lease Pending") tenancy never counts as occupied and never
+  // affects rent/charges below (all of that stays scoped to `lease` above,
+  // strictly 'active') — this is purely an extra display hint so the
+  // portfolio grid can show "Lease Pending" instead of a bare "Vacant"
+  // while an assignment is awaiting a signed agreement.
+  const draftLease = !lease ? db.prepare("SELECT * FROM leases WHERE property_id = ? AND status = 'draft' LIMIT 1").get(property.id) : null;
   let rentStatus = { status: 'paid', noCharges: true };
   let currentChargeSummary = null;
   let monthlyRentCents = 0;
@@ -85,6 +91,7 @@ function serializeProperty(db, property) {
     archivedAt: property.archived_at,
     occupancyStatus: lease ? 'occupied' : 'vacant',
     currentTenant: lease ? { id: lease.id, name: lease.tenant_name } : null,
+    pendingTenant: draftLease ? { id: draftLease.id, name: draftLease.tenant_name } : null,
     monthlyRentCents,
     rentStatus: rentStatus.status,
     hasNoLeaseYet: !lease,

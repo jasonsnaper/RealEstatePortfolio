@@ -29,6 +29,8 @@ const { registerRenterAuthRoutes } = require('./routes/renterAuth');
 const { registerRenterManagementRoutes } = require('./routes/renterManagement');
 const { registerRenterPortalRoutes } = require('./routes/renterPortal');
 const { registerStatementRoutes } = require('./routes/statements');
+const { registerLeaseTemplateRoutes } = require('./routes/leaseTemplates');
+const { registerLeaseAgreementRoutes } = require('./routes/leaseAgreements');
 const { requireRenterAuth } = require('./lib/renterAuth');
 const { renterCanSeeDocument, renterLeaseIds } = require('./lib/renterAccess');
 
@@ -81,6 +83,8 @@ function createApp({ db, port }) {
   registerRenterManagementRoutes(router, { db, appBaseUrl });
   registerRenterPortalRoutes(router, { db, appBaseUrl });
   registerStatementRoutes(router, { db });
+  registerLeaseTemplateRoutes(router, { db });
+  registerLeaseAgreementRoutes(router, { db });
 
   // The tenant's entry point (from a copied payment link) is just the SPA
   // shell — the page itself reads the token out of the URL and calls the
@@ -157,6 +161,19 @@ function createApp({ db, port }) {
           WHERE l.property_id = ? AND ps.file_path = ?
         `).get(propertyId, filename);
         if (statement && statement.shared_with_renter && renterLeaseIds(db, renter.id).includes(statement.lease_id)) return true;
+      } else if (kind === 'lease-agreements') {
+        // A completed agreement's final PDF is visible only to a renter who
+        // actually has a lease_signers row on THAT agreement — the same
+        // per-agreement scoping as getRenterAgreementOr404, not merely "on
+        // this lease" — so a former co-signer removed before a later,
+        // unrelated agreement was created on the same lease still can't see it.
+        const agreement = db.prepare(`
+          SELECT la.* FROM lease_agreements la JOIN leases l ON l.id = la.lease_id WHERE l.property_id = ? AND la.final_pdf_path = ?
+        `).get(propertyId, filename);
+        if (agreement) {
+          const signer = db.prepare('SELECT id FROM lease_signers WHERE agreement_id = ? AND renter_id = ?').get(agreement.id, renter.id);
+          if (signer) return true;
+        }
       }
       // kind === 'cover': never renter-visible via this path — falls through.
     } catch (e) {

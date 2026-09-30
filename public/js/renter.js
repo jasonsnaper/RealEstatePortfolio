@@ -121,7 +121,7 @@ function renderTopbar(currentLease) {
     ? '<select id="lease-switcher">' +
         LEASES.map((l) => (
           '<option value="' + l.id + '"' + (currentLease && String(currentLease.id) === String(l.id) ? ' selected' : '') + '>' +
-            escapeHtml(l.property.name) + (l.status === 'ended' ? ' (ended)' : '') +
+            escapeHtml(l.property.name) + (l.status === 'ended' ? ' (ended)' : (l.status === 'draft' ? ' (lease pending)' : '')) +
           '</option>'
         )).join('') +
       '</select>'
@@ -270,6 +270,14 @@ async function renderAcceptInvite(token) {
     );
     return;
   }
+  // A GENERIC invite (no property yet — see server/routes/renterManagement.js's
+  // POST /api/renters/invite) often starts from just an email, so the owner
+  // may not have supplied a real name/phone. Let the renter fill those in as
+  // part of "creating their account" here. A LEASE invite already carries a
+  // real name from the owner's records, so these extra fields would just be
+  // redundant (and are left out — accept-invite never blanks an existing
+  // name/phone when they're omitted from the request).
+  const isGeneric = !preview.leaseId;
   authShell(
     '<h2 style="margin-bottom:4px;">You’re invited</h2>' +
     '<p class="field-hint" style="margin-bottom:18px;">' +
@@ -279,6 +287,10 @@ async function renderAcceptInvite(token) {
     '</p>' +
     (preview.alreadyHasAccount ? '<div class="banner warn">You already have a portal account — setting a password here will replace it.</div>' : '') +
     '<form id="accept-form">' +
+      (isGeneric
+        ? '<div class="field"><label>Your name</label><input name="name" value="' + escapeHtml(preview.renterName || '') + '"></div>' +
+          '<div class="field"><label>Phone <span class="field-hint">(optional)</span></label><input name="phone" type="tel"></div>'
+        : '') +
       '<div class="field"><label>Password</label><input name="password" type="password" required minlength="8" autocomplete="new-password">' +
         '<span class="field-hint">At least 8 characters.</span></div>' +
       '<div id="accept-error"></div>' +
@@ -289,10 +301,10 @@ async function renderAcceptInvite(token) {
     e.preventDefault();
     const btn = qs('button[type=submit]', e.target);
     if (btn.disabled) return;
-    const { password } = formData(e.target);
+    const fields = formData(e.target);
     setButtonBusy(btn, true, 'Setting up…');
     try {
-      await Api.post('/api/renter/accept-invite', { token, password });
+      await Api.post('/api/renter/accept-invite', { token, password: fields.password, name: fields.name, phone: fields.phone });
       location.hash = '';
       boot();
     } catch (err) {
@@ -318,7 +330,7 @@ function renderLeaseList() {
         '<tr>' +
           '<td>' + escapeHtml(l.property.name) + '<div class="field-hint">' + escapeHtml(addressLine(l.property.address)) + '</div></td>' +
           '<td>' + (l.role === 'primary' ? 'Primary' : 'Co-renter') + '</td>' +
-          '<td>' + (l.status === 'ended' ? '<span class="badge warn">Ended</span>' : statusPill(l.rentStatus)) + '</td>' +
+          '<td>' + (l.status === 'ended' ? '<span class="badge warn">Ended</span>' : (l.status === 'draft' ? '<span class="badge warn">Lease pending</span>' : statusPill(l.rentStatus))) + '</td>' +
           '<td class="money">' + centsToDisplay(l.outstandingCents) + '</td>' +
           '<td><a class="btn small" href="#/lease/' + l.id + '">Open</a></td>' +
         '</tr>'
@@ -350,6 +362,10 @@ async function renderLeaseDashboard(leaseSummary, tab) {
     (leaseSummary.status === 'ended'
       ? '<div class="banner warn">This tenancy has ended. You can still view your documents and statements here, but new maintenance requests and payments aren’t available.</div>'
       : '') +
+    (leaseSummary.status === 'draft'
+      ? '<div class="banner info">This tenancy is pending — it becomes active once your lease agreement is reviewed and signed by both sides. Nothing is billed yet.</div>'
+      : '') +
+    '<div id="la-action-required-root"></div>' +
     '<div class="tabbar">' +
       TABS.map((t) => '<button data-tab="' + t.id + '" class="' + (t.id === tab ? 'active' : '') + '">' + t.label + '</button>').join('') +
     '</div>' +
@@ -357,12 +373,24 @@ async function renderLeaseDashboard(leaseSummary, tab) {
 
   qsa('[data-tab]').forEach((btn) => btn.addEventListener('click', () => { location.hash = '#/lease/' + leaseSummary.id + '/' + btn.dataset.tab; }));
 
-  let lease;
+  let lease, agreements;
   try {
-    lease = await Api.get('/api/renter/leases/' + leaseSummary.id);
+    [lease, agreements] = await Promise.all([
+      Api.get('/api/renter/leases/' + leaseSummary.id),
+      Api.get('/api/renter/leases/' + leaseSummary.id + '/agreements'),
+    ]);
   } catch (err) {
     qs('#tab-root').innerHTML = '<div class="banner error">' + escapeHtml(describeApiError(err)) + '</div>';
     return;
+  }
+
+  // Shown in a stable slot above the tabbar (not only on the Overview tab) so
+  // it's visible no matter which tab a renter lands on — too important to
+  // risk being missed because they were looking at Documents or Maintenance.
+  const actionRoot = qs('#la-action-required-root');
+  if (actionRoot) {
+    actionRoot.innerHTML = LeaseAgreementUI.actionRequiredCardHtml(agreements[0] || null);
+    LeaseAgreementUI.wireActionRequiredCard(actionRoot, () => refreshLeasesAndRoute());
   }
 
   if (tab === 'documents') renderDocumentsTab(lease);
@@ -381,25 +409,37 @@ function periodLabel(charge) {
 // payment modal), "pay next period early", and lease facts.
 // ---------------------------------------------------------------------------
 
-function renderOverviewTab(lease) {
+async function renderOverviewTab(lease) {
   const charges = lease.charges; // newest period first, per the API
   const unpaid = charges.filter((c) => c.status !== 'paid');
   const totalOutstanding = unpaid.reduce((sum, c) => sum + c.outstandingCents, 0);
   const canPay = lease.status === 'active';
+  // A pending ("draft") tenancy has never had a charge generated for it at
+  // all — "all paid up" would be technically true but reads like there was
+  // ever something to pay. The action-required card above the tabbar already
+  // covers the actual call to action, so this banner is just informational.
+  const balanceBanner = lease.status === 'draft'
+    ? '<div class="banner info">This lease hasn’t started yet, so nothing is billed.</div>'
+    : (unpaid.length === 0
+        ? '<div class="banner success">You’re all paid up — nothing is due right now.</div>'
+        : '<div class="banner ' + (unpaid.some((c) => c.status === 'late') ? 'error' : 'warn') + '">' +
+            'You owe ' + centsToDisplay(totalOutstanding) + ' across ' + unpaid.length + ' period' + (unpaid.length > 1 ? 's' : '') + '. Pay any period from the table below.' +
+          '</div>');
+  // Past/other lease agreements this renter was a party to on this lease
+  // (their own completed copy, a declined one, etc.) — fetched even for a
+  // draft lease, since a VOIDED prior attempt can still be worth seeing.
+  const history = await LeaseAgreementUI.renterAgreementHistoryHtml(lease.id);
 
   qs('#tab-root').innerHTML =
-    (unpaid.length === 0
-      ? '<div class="banner success">You’re all paid up — nothing is due right now.</div>'
-      : '<div class="banner ' + (unpaid.some((c) => c.status === 'late') ? 'error' : 'warn') + '">' +
-          'You owe ' + centsToDisplay(totalOutstanding) + ' across ' + unpaid.length + ' period' + (unpaid.length > 1 ? 's' : '') + '. Pay any period from the table below.' +
-        '</div>') +
+    balanceBanner +
     '<div class="section-heading">' +
       '<h2>Charges &amp; payment history</h2>' +
       (canPay ? '<button class="btn small" id="pay-early-btn" type="button">Pay next month early</button>' : '') +
     '</div>' +
     renderChargesTable(charges, canPay) +
     '<div class="section-heading" style="margin-top:30px;"><h2>Your lease</h2></div>' +
-    renderLeaseFacts(lease);
+    renderLeaseFacts(lease) +
+    history.html;
 
   qsa('[data-pay]').forEach((btn) => btn.addEventListener('click', () => openPaymentModal(lease, charges.find((c) => String(c.id) === btn.dataset.pay))));
   qsa('[data-charge-history]').forEach((btn) => btn.addEventListener('click', () => openHistoryModal(charges.find((c) => String(c.id) === btn.dataset.chargeHistory))));
@@ -414,6 +454,7 @@ function renderOverviewTab(lease) {
       openPaymentModal(lease, charge);
     }, { busyLabel: 'Preparing…' });
   }
+  LeaseAgreementUI.wireRenterAgreementHistory(qs('#tab-root'), history.agreements);
 }
 
 function renderChargesTable(charges, canPay) {

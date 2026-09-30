@@ -15,63 +15,49 @@ before connecting real bank accounts or sending a real tenant a real payment lin
 
 ## Update log
 
-**This update** (renter accounts and a full self-service renter portal — applied directly to your
-existing app; every existing property, tenant, lease, photo, document, and financial record was left
-exactly as it was; nothing here required you to re-enter anything):
+**This update** (invite a renter all the way through a signed, synced lease — applied directly to
+your existing app; every existing property, tenant, lease, photo, document, and financial record was
+left exactly as it was; nothing here required you to re-enter anything):
 
-- **Renters can now have their own account and sign in** at `/renter` — separate from, and in
-  addition to, the one-time no-login payment link that's always existed (`/pay/link/:token`,
-  unchanged). Signed in, a renter sees their own balance and full charge history, documents actually
-  shared with them, can file and track maintenance requests, pull next month's rent forward and pay
-  it early, and download any statement shared with them — across every lease they're on, past or
-  present. Full details in the new §4.
-- **A "renter" is its own identity**, separate from the plain tenant name/email that's always been on
-  a lease. Add one or more to a lease from the Tenant & Lease tab (co-tenants each get their own
-  login), invite them (a secure one-time link you copy and send yourself — no email provider is
-  configured, see §4), or remove one (revokes access to that lease without deleting the account).
-- **Document sharing reworked to be explicit, per lease** (and, when needed, per individual renter) —
-  replacing a single property-wide "shared with tenant" checkbox that couldn't tell one tenant from
-  another. A one-time migration carried forward anything already shared under the old model only
-  where the intended recipient was unambiguous; anywhere else it's flagged **"Review sharing"** for
-  you to resolve by hand rather than guessed at.
+- **A renter can now be invited, assigned to a property, and walked through an actual e-signed lease**
+  without you re-typing anything you've already recorded. New full write-up in §5: invitations and
+  the Unassigned Renters list, assigning to a property (a "Lease Pending" draft tenancy — never a
+  guessed-at active one), preparing the lease from a reusable template with a live PDF preview, the
+  landlord signing and sending, the renter reviewing and signing (or declining, or asking for a
+  correction), and what happens once every required signer is done.
+- **Lease templates are structured and reusable**, organized by a jurisdiction label you set — a
+  clearly-labeled sample template is provided so there's always something to start from, and it's
+  immutable; duplicate it to make your own editable one. See "Lease templates, precisely" in §5.
+- **Signing is real, consent-gated, and audited** — explicit e-signature consent before every
+  signature, a server-recorded timestamp (never the browser's clock), a distinct final "Sign and
+  Accept Agreement" action that can't be triggered by anything else, and a full audit trail (who
+  consented, who signed, when, plus the completed document's own integrity hash) available to the
+  owner and every actual signer. A signed, sent version is frozen — changing terms after that voids
+  and replaces it with a fresh one, never edits it in place. See "Real signing: what's actually
+  implemented" in §5 for exactly what this does and doesn't mean next to a real e-signature provider.
+- **Completion syncs straight into the tenancy** — rent and deposit flow into the lease's own billing
+  the moment the last signature lands, without rewriting a single historical charge, duplicating the
+  lease, or marking a future tenancy occupied before its start date. A former tenant keeps access to
+  their own completed agreement afterward and never sees a later renter's.
+- 29 new automated tests (180 total, all passing) — see §8.
+
+**Previous update** (renter accounts and a full self-service renter portal):
+
+- **Renters can have their own account and sign in** at `/renter` — separate from, and in addition
+  to, the one-time no-login payment link that's always existed (`/pay/link/:token`, unchanged).
+  Signed in, a renter sees their own balance and full charge history, documents actually shared with
+  them, can file and track maintenance requests, pull next month's rent forward and pay it early, and
+  download any statement shared with them — across every lease they're on, past or present. Full
+  details in §4.
+- **Document sharing is explicit, per lease** (and, when needed, per individual renter) rather than a
+  single property-wide "shared with tenant" checkbox.
 - **Rental Payment Statement PDFs** — generate one for a lease (a month, a year, the whole tenancy to
-  date, or a custom range), share it to the renter's portal, "email" it (simulated), or delete it.
-  Built with a small hand-written, dependency-free PDF writer, since this app has zero npm
-  dependencies by design — see "The PDF writer, and a real encoding bug it caught" in §7.
-- **Ending a lease now closes the loop properly**: it auto-generates a closing statement for the
-  whole tenancy up to the actual move-out date, and a renter who already had portal access keeps
-  read-only access to that lease's history afterward. This also surfaced a real, previously-
-  undetected bug in how an ended lease's balance was calculated — see "The ended-lease balance bug,
-  confirmed" in §7.
-- **A related sample-data bug, caught and fixed alongside the sharing rework:** the seed script's
-  "shared with tenant" sample documents had quietly stopped being visible to a tenant the moment the
-  model above went explicit. Fixed, and the seed script now also creates one fully active
-  renter-portal login (credentials printed to your terminal alongside the demo owner account — §1)
-  so the renter portal is explorable immediately too.
-- 49 new automated tests (151 total, all passing) — see §7.
-
-**Previous update** (mobile photo picker fix, a data-loss investigation and fix, and Saving/Saved UX
-across the whole app):
-
-- **Fixed: the mobile photo picker forced the phone camera open instead of offering the photo
-  library**, so an existing photo could never be chosen, only a brand-new one taken on the spot.
-  The picker now detects HEIC photos (by file type, and by extension when the phone reports no
-  type at all) and offers the real library. Covered by 4 automated tests (`test/photoPicker.test.js`).
-- **Data loss investigated, root cause identified, and the app now detects and loudly reports the
-  unsafe condition instead of failing silently** — a boot-time console warning, a permanent red
-  banner in the app itself (before anyone's even signed in), and an unauthenticated
-  `GET /api/system-status` check. Full root cause, the fix, and what was actually verified (including
-  a real process kill-and-restart, not just a page reload) are in §8's **"Persistence verification,
-  step by step"** section.
-- **Every save and action across the app shows real Saving/Saved states, tied to the server's actual
-  response** — no more optimistic "it probably worked." A failed save keeps your modal open, shows a
-  plain-language error, and preserves everything you typed. Rapid double-clicking a save button can
-  no longer fire the request twice. Closing a modal (or the browser tab) with unsaved changes asks
-  first. Building this surfaced and fixed two real pre-existing bugs: canceling a nested confirmation
-  used to destroy the screen underneath it instead of just dismissing the prompt, and canceling out
-  of the mobile photo picker after choosing "keep editing" used to leave broken photo previews
-  behind. Both fixed and covered by live browser testing.
-- 9 automated tests (102 total at the time) covering everything above.
+  date, or a custom range), share it to the renter's portal, "email" it (simulated), or delete it,
+  built with a small hand-written, dependency-free PDF writer.
+- **Ending a lease closes the loop**: it auto-generates a closing statement up to the actual move-out
+  date, and a renter who already had portal access keeps read-only access to that lease's history
+  afterward.
+- 49 automated tests added at the time (151 total then) — see §8.
 
 ---
 
@@ -116,11 +102,12 @@ owner account on first visit.
 npm test
 ```
 
-This runs 151 tests (unit + integration) covering money math, rent-status logic, the full
+This runs 180 tests (unit + integration) covering money math, rent-status logic, the full
 payment/webhook flow, multi-tenant data isolation, mortgage totals, bank-account linking,
 payment-link generation, the mobile photo picker's HEIC handling, the shared save-lifecycle
-error-message logic, renter accounts and the renter portal, document sharing, and payment
-statements (including the hand-written PDF writer). See §7 for exactly what's covered.
+error-message logic, renter accounts and the renter portal, document sharing, payment statements
+(including the hand-written PDF writer), and the full invite-to-signed-lease workflow (including the
+e-signature audit trail and the demo signing adapter). See §8 for exactly what's covered.
 
 ---
 
@@ -148,6 +135,10 @@ statements (including the hand-written PDF writer). See §7 for exactly what's c
   they're on. Both deliberately show a renter **less** than the owner sees — no bank balances, no
   mortgage details, no private owner notes, and maintenance requests show no vendor or cost — this is
   enforced server-side and covered by tests, not just hidden in the UI.
+- **Getting from "found a renter" to "have a signed lease"** used to mean handling that entirely
+  outside this app. Now: invite the renter, assign them to a property, prepare and sign the lease
+  yourself, and send it for their signature — all from here, with a full audit trail once it's done.
+  See §5.
 
 ### Rent status, precisely
 
@@ -189,7 +180,7 @@ to add your own. This is a real delete, not an archive; there's no undo.
 Every lease has always had a plain tenant name/email. A **renter** is a separate, additional thing:
 an actual account a tenant can sign in with, at `/renter`, to see their own information instead of
 you having to look everything up and relay it to them yourself. A lease can have zero renters
-(nothing changes — the payment-link flow in §5 still works exactly as it always has), one, or
+(nothing changes — the payment-link flow in §6 still works exactly as it always has), one, or
 several — e.g. two co-tenants, each with their own login.
 
 ### Setting a renter up
@@ -263,7 +254,7 @@ from generating it, so you can look a statement over before a renter ever sees i
 The PDF itself is produced by a small, hand-written, dependency-free PDF writer
 (`server/lib/pdf.js`) — this app has zero npm dependencies by design (see the top of this document),
 and this sandbox's npm registry access is blocked outright, so pulling in a PDF library wasn't
-reachable even as an option. See "The PDF writer, and a real encoding bug it caught" in §7 for what
+reachable even as an option. See "The PDF writer, and a real encoding bug it caught" in §8 for what
 that involved and what it caught.
 
 ### Move-out and historical access
@@ -285,7 +276,7 @@ their own history — the "historical access" case) both stay reachable, not jus
 ### What's simulated
 
 **Invite links and "emailing" a statement are both simulated** — no email or SMS provider is
-configured in this environment, the same honest position §5 takes on a real payment provider and §6
+configured in this environment, the same honest position §6 takes on a real payment provider and §7
 takes on a real bank connection. An invite generates a real, working, single-use link that you copy
 and send yourself; "Email" on a statement logs what *would* be sent (to the server console) and marks
 the statement shared, but no message actually leaves this server. Everything up to that boundary —
@@ -294,7 +285,188 @@ simply no outside provider wired in to hand the message to.
 
 ---
 
-## 5. Payments: what's real and what's simulated
+## 5. Lease agreements: invitation to a signed lease
+
+Once a renter has an account (§4), turning them into an actual tenant with a signed lease is its own
+guided flow — the whole distance from "I found a renter" to a fully executed agreement with rent
+already flowing into the tenancy's ledger. None of the sample data comes with one of these already in
+progress; to see it, invite a renter from the dashboard (**Invite Renter**) and follow along — the
+whole path takes a few minutes end to end.
+
+### Unassigned renters, and assigning one to a property
+
+A renter who signs up through a general invite (rather than being added directly to a specific lease,
+per §4) has an account but nothing to do with it yet. They show up in the **Unassigned Renters** list
+on the dashboard until an owner assigns them somewhere — there's no cross-landlord directory, and a
+renter appears under *your* account only once they've accepted a secure invitation tied to it.
+
+Assigning one to a property creates a **draft tenancy**, not an active lease. The property shows a
+**Lease Pending** badge everywhere it appears (dashboard, property card, the property page itself)
+until a lease is actually signed: no rent is scheduled, no charges are generated, and the unit doesn't
+count as occupied. The app also refuses a second draft or active tenancy on a property that already
+has one pending, and refuses adding a manual tenant to a property that's mid-assignment — one property,
+one tenancy, no accidental double-booking or double billing. From the draft tenancy's page, a prominent
+**Send Lease Agreement** button opens lease preparation; the assignment itself sends nothing to the
+renter on its own.
+
+### Lease templates, precisely
+
+Every lease is prepared from a **template** — reusable clause text plus a placeholder for each field
+that changes lease to lease (names, address, rent, dates, and so on). A brand-new account gets exactly
+one, automatically: a clearly labeled **"Standard Residential Lease (Sample)"** template, watermarked
+as sample data in both the template list and every PDF built from it, and it's **immutable** — editing
+or deleting it is refused outright. **Duplicate** it to get your own editable copy (or write one from
+scratch), give it a name and a jurisdiction label of your own choosing (a free-text field for your own
+organization — e.g. "California" or "Ontario — residential," not a legal database of per-jurisdiction
+requirements), and edit its clauses and placeholders freely. Templates are per-owner and listed
+together regardless of jurisdiction, so separate templates for separate states/provinces/property
+types sit side by side.
+
+**This is a structured, text-based template system, not a visual PDF/DOCX designer.** You can't upload
+an existing lease document (a Word file, a scanned PDF) and click-to-place signature boxes on it —
+templates are edited as text with placeholders, and the output is always this app's own generated PDF
+layout. If your business already has a lease document it's required to use as-is, this app doesn't
+reproduce its exact layout; it can only build an equivalent structured version of its content.
+
+**Required fields are enforced, not just suggested.** Preparing a lease won't let you finalize (or
+sign) it until landlord and tenant/co-tenant names, the property address and unit, rent, deposit, the
+term (a fixed end date or month-to-month), the rent due day, grace period and late terms, occupants,
+utilities responsibility, and both signature blocks are all filled in — finalizing with anything
+missing is rejected with the exact list of what's still needed, never silently accepted with a gap in
+it.
+
+### Preparing a lease
+
+Opening **Send Lease Agreement** on a draft tenancy opens an editable form next to a live PDF preview
+of the exact document that will eventually be signed — every field you change updates the preview
+immediately. Known facts (the property's address, the tenant's name from the renter record, the rent
+already set on the tenancy) are **prefilled**, but you review and can correct every one of them before
+anything is finalized; nothing is invented on your behalf, and no clause appears in the output that
+didn't come from a field you filled in or a template you chose. The draft **saves persistently** as
+you go — close the tab and come back tomorrow, it's exactly as you left it — and you can preview the
+PDF at any point, finished or not, before you'd ever commit to sending it.
+
+### Landlord signs, then sends
+
+Finalizing a lease (only possible once every required field above is filled in) moves straight into
+signing: explicit e-signature consent, a signature in your own field, and a **server-recorded
+timestamp** — the lease's commencement date (whatever start date is on the lease itself) is always
+tracked completely separately from the date it was actually signed, so a lease starting next month
+never looks like it was signed in the future or vice versa. Once you sign, you confirm the tenant
+recipients and hit **Send for Signature**. From that instant the document is **frozen** — this exact
+version, with your signature on it, is what the tenant will see, and it can never be edited in place.
+Needing to change a term afterward means **voiding** the agreement and preparing a fresh one; the new
+version carries the old field values forward so you're not retyping everything, gets its own version
+number, and the superseded copy is kept, not deleted — a signature is never carried onto changed terms.
+
+### The renter reviews and signs
+
+The moment a lease is sent, every tenant/co-tenant it names sees a persistent **"Action Required:
+Review and Sign Lease"** card in their portal, above every tab, until they act on it. From there they
+can open, read, and download the full document (with the landlord's signature already on it) before
+doing anything else. Signing requires its own explicit consent checkbox — never pre-checked — and a
+distinct, separate **"Sign and Accept Agreement"** action; typing a name into a text field is never
+treated as a signature by itself. A tenant can instead **decline** (with a required message explaining
+why) or **request a correction** (also with a message) — either one blocks further signing until the
+owner voids and replaces the agreement, and both notify the owner. With **co-tenants**, each signs in
+their own field over their own session; one signer can never see or complete another's signature, and
+the agreement only reaches "partially signed" rather than "awaiting renter signature" once it actually
+knows one of two required renters has signed and the other hasn't — one signature on a two-renter lease
+is never silently treated as a completion.
+
+### Completed: the final PDF and the audit trail
+
+Once every required signer — landlord plus every named tenant/co-tenant — has signed, the agreement
+moves to **Completed** and three things happen at once: a final signed PDF is generated and saved
+**permanently** under the lease (every signature and its date, laid out on the document itself); the
+lease's rent and deposit are **synced into the tenancy** (below); and a **signing audit record** is
+finalized — the document's version, every recipient's identity, every consent and signing event with
+its server timestamp in order, plus a **SHA-256 hash of the completed PDF itself**, so the file can be
+checked against tampering later. Both the owner and every actual signer can open the audit trail,
+download the final PDF, or share it by email (simulated — below); a completed agreement is
+**immutable** — the only way to change terms after this point is a brand-new agreement, never an edit
+to this one.
+
+### Status tracking, reminders, and lease sync
+
+An agreement is always exactly one of: **Draft**, **Awaiting landlord signature**, **Awaiting renter
+signature**, **Partially signed** (some but not all renters have signed), **Changes requested**,
+**Completed**, **Declined**, or **Voided**. From the lease's page, an owner can review it at any stage,
+send a **reminder** to whichever signers haven't acted yet, or **void** it outright. Re-sending never
+duplicates an agreement — there is always exactly one open agreement per lease, plus whatever
+voided/declined history led up to it.
+
+On completion, the sync into the tenancy is deliberately conservative: it **updates** the lease's rent
+and deposit-required figures rather than ever duplicating the lease row; a new rent figure lands as a
+new, append-only row in the rent history (never rewriting what an earlier period actually charged); the
+security deposit *held* is never touched by signing alone — only what's *required* changes, since
+signing a lease isn't the same as actually receiving the deposit; and a tenancy with a future start
+date is marked active without generating a single charge before that date arrives (charge generation
+only ever runs up through today, regardless of status). A **former tenant** keeps access to their own
+completed agreement after their lease ends, and, on a property that's since been re-let, never sees the
+new tenant's agreement — access is scoped to the specific agreements a renter actually signed, not to
+the property in general.
+
+**One known gap, disclosed rather than glossed over:** invitation *links* expire (§4) and are enforced
+as such, but a *sent lease agreement* itself has no automatic time-based expiry — an owner who wants to
+cancel a stale, unsigned agreement needs to void it by hand rather than waiting for it to lapse on its
+own.
+
+### Real signing: what's actually implemented
+
+I looked for an existing e-signature integration in this codebase first and found none — this is a new
+build. Every agreement carries a `provider` field, exactly like payments (§6) and bank connections
+(§7), specifically so a real provider can be dropped in later without redesigning anything; today that
+field is always `"demo"`. I want to be precise about what that means, the same way §6 is precise about
+the payment processor:
+
+**What's real:** explicit consent capture, server-side timestamps, per-signer authentication and
+tamper-proofing (a signing action always looks up the caller's *own* signer record — never a
+client-supplied id — so one signer can't complete another's fields even by editing a request by hand),
+the freeze-on-send/void-and-replace mechanics, the generated PDF, and the full audit trail with its
+SHA-256 document hash. All of it is exercised by the automated tests in §8.
+
+**What's not real:** this is this application's **own** signing workflow, not a connection to
+DocuSign, Dropbox Sign, Adobe Sign, or any other third-party e-signature provider — I never call it by
+one of those names, and the completed PDF says so on its own audit page rather than implying a
+provider-issued certificate. It doesn't carry the specific legal assurances a dedicated e-signature
+provider does (provider-side tamper-evident certificates, provider-hosted long-term audit storage,
+jurisdiction-specific consumer e-signature disclosures, and so on) — those come from the provider
+itself, not from this code, however carefully the workflow around it is built.
+
+**To connect a real provider,** the shape to follow is the same seam §6 uses for payments:
+
+1. Create an adapter (e.g. `server/lib/providers/docusignProvider.js`) that the agreement routes call
+   instead of writing directly to `provider: 'demo'` — exposing, at minimum, a way to create an
+   embedded or emailed signing session per recipient, and a webhook handler that verifies the
+   provider's signature and marks the corresponding signer complete.
+2. **Verify webhooks the same way `server/routes/webhooks.js` already does for payments:** check the
+   provider's signature before trusting anything in the payload, and make replaying the same event a
+   no-op — a real provider will redeliver events, and a duplicate must never double-record a signature
+   or re-trigger completion.
+3. **Never let a browser redirect alone mark anything signed.** The pattern this app already uses for
+   a "payment succeeded" page (§6) applies identically here: a signing-complete redirect is just a
+   page; only a verified, server-side event (the provider's webhook, or this app's own consent-and-
+   signature submission today) is allowed to change an agreement's status.
+4. Until real credentials are configured, keep production sending disabled and show the same kind of
+   plain, honest "not connected yet" state this app already shows for Plaid (§7) — never a fake-looking
+   signing session.
+
+I didn't build against a real provider's API without real credentials to test it against, for the same
+reason §6 gives for payments: code written against an API that's never actually been exercised looks
+connected without ever being proven to work.
+
+### What's simulated
+
+Same boundary as §4: **no email or SMS provider is configured**, so "Send for Signature," a reminder,
+and emailing a completed agreement all log what *would* be sent to the server console and update the
+in-app state (the tenant's "Action Required" card, the reminder timestamp) rather than delivering
+anything externally. Everything up to that boundary is real and tested; there's no outside provider
+wired in to hand the message to.
+
+---
+
+## 6. Payments: what's real and what's simulated
 
 Every route in the app talks to "the payment provider" through one small interface
 (`server/lib/paymentProvider.js`) — never to a specific vendor's SDK directly. Today there is
@@ -339,7 +511,7 @@ separation is the point of the interface.
 
 ---
 
-## 6. Bank accounts
+## 7. Bank accounts
 
 Two ways to track a bank account, side by side:
 
@@ -401,9 +573,9 @@ existed since the first build and is unrelated to which of the above two account
 
 ---
 
-## 7. What's actually been tested
+## 8. What's actually been tested
 
-**Automated (151 tests across 13 files, `npm test`, all passing):**
+**Automated (180 tests across 14 files, `npm test`, all passing):**
 - Money math (dollar/cents parsing and formatting) and date math (month/year boundaries, clamping
   short months) — the kind of off-by-one bugs that are easy to ship silently.
 - The full rent-status state machine (upcoming/due/late/partial/paid), including refunds and
@@ -506,6 +678,33 @@ existed since the first build and is unrelated to which of the above two account
   old one, and ending another owner's lease is refused before it ever generates anything.
 - **New — The PDF writer** (`test/pdf.test.js`, 9 tests): see "The PDF writer, and a real encoding
   bug it caught" below.
+- **New — Lease agreements** (`test/leaseAgreements.test.js`, 29 tests): a generic invite appears in
+  Unassigned Renters immediately (not gated on acceptance), a duplicate invite is rejected (409), an
+  expired/invalid token is rejected (410); assigning a renter creates a draft lease with **no** rent
+  history yet, removes them from Unassigned Renters, and surfaces on the property record — and a
+  second assignment to an already-pending property is rejected (409); the built-in sample template
+  can't be edited or deleted (409 on either) but can be duplicated into an editable copy, and its
+  placeholders/prefill are correct, including the tenant as a signer; finalizing with any required
+  field missing is rejected with the exact missing-field list, never silently accepted; a preview PDF
+  can be generated at any stage; once finalized, the agreement's body is frozen (edits rejected, 409)
+  and voiding-then-replacing increments the version, carries `replacesAgreementId`, and carries the
+  old field values forward while preserving the superseded row untouched; landlord signing validates
+  consent and the signature field, refuses a second signature, and — the regression guard for a bug
+  fixed earlier in this build — lands on **"awaiting renter signature," not "partially signed,"**
+  after only the landlord has signed; a renter who isn't an actual signer on the agreement gets a 404,
+  never a peek at someone else's lease; declining requires a message and blocks further signing;
+  requesting a correction blocks signing until the owner voids and replaces the agreement; a two-signer
+  (primary + co-tenant) lease correctly reads "partially signed" after only one has signed, with each
+  signer's own action isolated from the other's, including a same-email dedup case; the full audit
+  trail's event order matches `created → finalized → consented → signed → sent → consented → signed →
+  completed` identically from the owner's and the renter's own view; completion generates the final
+  PDF and its hash, syncs rent/deposit into the tenancy exactly once (a replayed completion event
+  doesn't duplicate the rent-history row), and a future-dated lease's start produces zero charges
+  despite being marked active; emailing the agreement is refused before completion and allowed after;
+  and former-tenant isolation is tested against a realistic **same-property, sequential-tenant**
+  scenario — ending one lease and assigning a new renter to the same now-vacant property, then
+  confirming the first renter still sees their own completed agreement and gets a 404 on the second
+  renter's, not a 403 that would reveal it exists.
 
 ### The payment-link bug, confirmed
 
@@ -663,7 +862,7 @@ live in a real browser (Playwright) rather than by inspection, across nine scena
 9. **No new console/page errors** were observed during any of the above, checked by listening for
    them for the whole run rather than only looking where a bug was expected.
 
-This same round also added the misconfigured-storage warning banner described in §8. That banner's
+This same round also added the misconfigured-storage warning banner described in §9. That banner's
 condition (`server/lib/storageStatus.js`) was checked directly against the possible combinations of
 `DATA_DIR`/`UPLOADS_DIR`/hosting-provider environment variables, and the banner and matching
 `/api/system-status` response were confirmed to appear and disappear exactly as that logic
@@ -681,7 +880,7 @@ is fully covered by real automated tests (`test/apiClient.test.js`).
 
 **Not exercised at all:** anything involving a real payment provider, a real, credentialed Plaid
 connection, or a real email/SMS provider for renter invites and statement emails, since none of the
-three have credentials configured in this environment (§4, §5, §6) — the code paths are real and
+three have credentials configured in this environment (§4, §6, §7) — the code paths are real and
 tested up to that boundary, but there is nothing to test past it until you add your own credentials.
 
 ### Verified by hand, renter portal & statements update
@@ -754,9 +953,51 @@ correct from the server-side tests alone, across both the renter-facing and owne
 9. **No new console/page errors** were observed in any of the above, checked by listening for both
    for the duration of each run.
 
+### Verified by hand, lease agreements update
+
+This feature is a modal-heavy part of the UI, exactly the kind of thing that's easy to get subtly
+wrong in ways only a real browser catches, so it was driven end to end with Playwright against a
+running instance of this exact app (an isolated database and uploads folder, never the real one)
+rather than assumed correct from the HTTP-level tests above:
+
+1. **The whole path, once, start to finish.** Signed in as a fresh owner, added a property, generated
+   a renter invite, accepted it as that renter, assigned the renter to the property from the owner
+   side, prepared a lease (filled every required field, watched the PDF preview update live), signed
+   it as the owner, sent it, signed it as the renter (consent checkbox, then the distinct "Sign and
+   Accept Agreement" button), and confirmed completion on both sides — including the owner's audit
+   trail and a real PDF download compared by byte count on both the owner's and renter's copy.
+2. **A real, would-have-shipped bug, found and fixed.** Clicking "Invite Renter" hung on the
+   invite-link modal indefinitely — the copy-link field that should have appeared never did. Root
+   cause: the modal helper this button used (`wireSave`) closes "whichever modal happens to be open
+   right now" after a successful save, without checking *which* modal that is; this button's own
+   success handler already closes the invite-*form* modal and opens a new invite-*link* modal, so
+   `wireSave`'s own cleanup immediately closed that brand-new modal right back out from under it.
+   Fixed by wiring the form's submit event by hand instead of through `wireSave`, the same pattern
+   this codebase already used elsewhere for a modal-to-modal handoff. Confirmed fixed by re-running
+   the same click in a real browser. The identical latent bug — masked by lucky timing rather than
+   actually correct — was found and fixed the same way in the template editor's save handler before
+   it ever surfaced as a visible failure.
+3. **Rent sync, checked against the numbers, not just the status label.** After completion, confirmed
+   the tenancy actually went active with the exact rent from the signed lease, exactly one rent-history
+   row (nothing duplicated by the flow), and — for a lease with a future start date — **zero**
+   generated charges despite the tenancy already showing active, matching what §5 claims about charge
+   generation never running ahead of today.
+4. **What each side is shown, not just what each side is sent.** Confirmed directly in the rendered
+   page (not just the API response) that the sample-template disclaimer is visible on the prep screen,
+   the renter's consent checkbox starts unchecked, "Sign and Accept Agreement" is visually distinct
+   from ordinary form submission, and Decline/Request Correction are both present and reachable before
+   signing — a control that exists in the API but never renders would pass every HTTP-level test above
+   while still failing the actual person using it.
+5. **No new console/page errors** were observed for the duration of the run.
+
+**Not covered by this pass:** a real second co-tenant browser session (two-signer isolation is covered
+by the automated HTTP tests in §8, not re-driven through a second real browser tab), and anything past
+the demo signing adapter's boundary, since there's nothing real to click through until a provider is
+actually connected (see "Real signing: what's actually implemented" in §5).
+
 ---
 
-## 8. Security notes
+## 9. Security notes
 
 - Passwords are hashed with Node's built-in `scrypt` (random salt per password, timing-safe
   comparison) — no plaintext, no reversible encoding. Renter passwords go through the exact same
@@ -783,7 +1024,13 @@ correct from the server-side tests alone, across both the renter-facing and owne
   and written to `data/` with `0600` permissions — never hard-coded, never checked into version
   control (see `.gitignore`).
 - Every property/financial/tenant-scoped route checks that the resource actually belongs to the
-  signed-in owner before returning anything (tested — see §7's "data isolation" line).
+  signed-in owner before returning anything (tested — see §8's "data isolation" line).
+- **Every lease-signing action is looked up by the caller's own identity, never a client-supplied
+  signer id** — a request to sign, decline, or request a correction always resolves "which signer is
+  this?" from the authenticated session, so there's no id to tamper with in the first place, not just
+  a check that happens to reject the wrong one. A completed agreement's PDF is hashed (SHA-256) at
+  generation time and that hash is stored in its audit record, so the file can be checked against
+  tampering after the fact.
 
 ### Before you deploy this beyond your own machine
 
@@ -846,7 +1093,7 @@ See `server/lib/storageStatus.js`.
 **2. HTTPS.** Serve the app over HTTPS and set `APP_BASE_URL=https://your-real-domain.com` — this is
 also what turns on the `Secure` cookie flag mentioned above.
 
-**You should also** read §5 and connect a real payment provider before sending a real tenant a real
+**You should also** read §6 and connect a real payment provider before sending a real tenant a real
 payment link — right now, no real money can move through this app at all, by design.
 
 ### Persistence verification, step by step
@@ -870,7 +1117,7 @@ persistent disk instead of its own folder) already existed before this round; wh
 that the app now **detects and loudly reports** the unsafe default instead of failing silently: a
 boot-time console warning, a permanent red banner in the app itself (every screen, before anyone's
 even signed in), and an unauthenticated `GET /api/system-status` check — plus the save-lifecycle UX
-in §7 (visible Saving/Saved states, inline errors that preserve your input, a warning before
+in §8 (visible Saving/Saved states, inline errors that preserve your input, a warning before
 leaving unsaved changes) so that if a save ever fails for *any* reason, including a future one, it
 fails loudly on screen rather than looking like it worked.
 
@@ -908,34 +1155,48 @@ check it's still there. That's the one step in the original ask that only you ca
 
 ---
 
-## 9. Project layout
+## 10. Project layout
 
 ```
 server/
   db.js                  schema + additive migrations (schema_meta.version tracked)
   seed.js                sample-data generator (npm run seed)
   lib/                   money/date helpers, rent-status logic, auth, and:
-                            paymentProvider.js  mock payment processor (§5)
-                            bankProvider.js     real Plaid REST client (§6)
-                            storageStatus.js    ephemeral-host/misconfigured-persistence detection (§8)
+                            paymentProvider.js  mock payment processor (§6)
+                            bankProvider.js     real Plaid REST client (§7)
+                            storageStatus.js    ephemeral-host/misconfigured-persistence detection (§9)
                             renterAuth.js       renter session/token issuance — separate from owner
-                                                  sessions by design (§8)
+                                                  sessions by design (§9)
                             renters.js          renter/lease-renter data access, incl. what makes a
                                                   renter "Active" vs "Not invited" (§4)
                             renterAccess.js     what a signed-in renter may see (documents, charges) —
                                                   the enforced source of truth for sharing (§4)
-                            pdf.js              zero-dependency PDF writer used for statements (§4/§7)
-                            statements.js       statement generation/PDF-rendering pipeline (§4/§7)
+                            pdf.js              zero-dependency PDF writer used for statements (§4/§8)
+                            statements.js       statement generation/PDF-rendering pipeline (§4/§8)
+                            leaseAgreements.js  agreement lifecycle, signing, freeze/void-replace,
+                                                  final PDF + audit trail, lease sync (§5/§8)
+                            leaseTemplates.js   template CRUD, sample-template provisioning and its
+                                                  immutability (§5)
+                            pdfText.js          word-wrapping for the lease PDF's paragraph text,
+                                                  built on pdf.js's base-14 font metrics (§5)
   routes/                one file per resource (properties, leases, financials, tenantPortal,
                             bankAccounts, bankConnections, paymentLinks, systemStatus, …), plus:
                             renterAuth.js       renter sign-up/login/invite-accept + tokens (§4)
                             renterManagement.js owner-facing add/invite/remove-renter endpoints (§4)
                             renterPortal.js     the signed-in renter's own API — balance, documents,
                                                   maintenance, statements (§4)
-                            statements.js       generate/list/share/email/delete statements (§4/§7)
+                            statements.js       generate/list/share/email/delete statements (§4/§8)
+                            leaseAgreements.js  owner + renter HTTP surface: prepare/preview/finalize,
+                                                  sign/decline/request-correction, remind/void, audit,
+                                                  final-PDF download and email (§5)
+                            leaseTemplates.js   list/create/update/delete/duplicate a template (§5)
 public/
   index.html + js/       owner-facing single-page app (hash-based routing, no build step)
                             components.js  shared UI primitives (Modal/Toast/PhotoPicker/…)
+                            leaseAgreementUI.js  shared owner + renter lease-agreement UI: invite/
+                              assign modals, the Unassigned Renters panel, template manager, the
+                              prep-and-sign flow, the renter's Action Required card, and the audit
+                              modal (§5)
                             views/bankAccounts.js  Bank Accounts page + per-property section,
                               including the Plaid Link browser flow
   tenant.html + tenant.js  the payment-link surface (`/pay/link/:token`) — no account, one-off (§2)
@@ -950,10 +1211,12 @@ test/
   apiClient.test.js      public/js/api.js's timeout/error classification, against a real server
   photoPicker.test.js    photo picker's HEIC-detection/usable-file pure logic
   formSave.test.js       shared save-lifecycle error-message classification (describeApiError)
-  renterPortal.test.js   renter accounts: invite/accept, sign-in, merge, portal-visible data (§4/§7)
-  statements.test.js     statement generation math and the PDF-rendering pipeline (§4/§7)
-  statementsRoutes.test.js  owner-facing statement routes: generate/list/share/email/delete (§7)
-  pdf.test.js            the PDF writer itself, including the encoding bug it caught (§7)
+  renterPortal.test.js   renter accounts: invite/accept, sign-in, merge, portal-visible data (§4/§8)
+  statements.test.js     statement generation math and the PDF-rendering pipeline (§4/§8)
+  statementsRoutes.test.js  owner-facing statement routes: generate/list/share/email/delete (§8)
+  pdf.test.js            the PDF writer itself, including the encoding bug it caught (§8)
+  leaseAgreements.test.js  invite-to-signed-lease end to end: assignment, templates, prep, signing,
+                             audit trail, completion sync, former-tenant isolation (§5/§8)
 ```
 
 No bundler, no framework, no build step — edit a `.js` file under `public/` and reload the page.

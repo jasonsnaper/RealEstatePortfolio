@@ -18,15 +18,16 @@ const DashboardView = (function () {
     qs('#view-root').innerHTML = '<div class="loading-block"><span class="spinner-inline"></span> Loading your portfolio…</div>';
     const { start, end } = rangeToDates(state.range);
     const portfolioQuery = start ? ('?start=' + start + '&end=' + end) : '';
-    const [portfolio, reminders, sampleStatus] = await Promise.all([
+    const [portfolio, reminders, sampleStatus, unassignedRenters] = await Promise.all([
       Api.get('/api/portfolio' + portfolioQuery),
       Api.get('/api/portfolio/reminders'),
       Api.get('/api/sample-data/status'),
+      Api.get('/api/renters/unassigned'),
     ]);
-    await renderWithData(portfolio, reminders, sampleStatus);
+    await renderWithData(portfolio, reminders, sampleStatus, unassignedRenters);
   }
 
-  async function renderWithData(portfolio, reminders, sampleStatus) {
+  async function renderWithData(portfolio, reminders, sampleStatus, unassignedRenters) {
     const params = new URLSearchParams();
     if (state.q) params.set('q', state.q);
     if (state.occupancy) params.set('occupancy', state.occupancy);
@@ -39,8 +40,10 @@ const DashboardView = (function () {
       '<div class="page-title">Portfolio</div>' +
       '<div class="page-subtitle">' + portfolio.propertyCount + ' active ' + (portfolio.propertyCount === 1 ? 'property' : 'properties') + ' · ' + Math.round(portfolio.occupancyRate * 100) + '% occupied</div>' +
       renderSampleBanner(sampleStatus) +
+      renderRenterActionsCard() +
       renderLedger(portfolio) +
       renderReminders(reminders) +
+      LeaseAgreementUI.unassignedPanelHtml(unassignedRenters) +
       renderToolbar() +
       (properties.length === 0 ? renderEmpty() : '<div class="property-grid" id="property-grid"></div>');
 
@@ -55,8 +58,35 @@ const DashboardView = (function () {
     }
 
     wireToolbar(portfolio);
+    wireRenterActionsCard();
+    LeaseAgreementUI.wireUnassignedPanel(qs('#view-root'), unassignedRenters, () => render());
     const removeSampleBtn = qs('#remove-sample-btn');
     if (removeSampleBtn) removeSampleBtn.addEventListener('click', removeSampleData);
+  }
+
+  // The renter portal has one permanent URL for every renter of this owner's
+  // (no per-lease or per-property link) — "Copy Renter Portal Link" just
+  // hands that out; "Invite Renter" is the secure, trackable alternative
+  // (see leaseAgreementUI.js) for when the owner wants a link tied to a
+  // specific person that turns into an account when opened.
+  function renderRenterActionsCard() {
+    return (
+      '<div class="card panel" style="margin-bottom:22px;">' +
+        '<div class="section-heading"><h2>Renters</h2><div class="btn-row">' +
+          '<button class="btn small" id="copy-portal-link-btn">Copy Renter Portal Link</button>' +
+          '<button class="btn small primary" id="invite-renter-btn">Invite Renter</button>' +
+        '</div></div>' +
+        '<p class="field-hint" style="margin:0;">The portal link works for any renter, any time — sign-in, account recovery, and creating an account all live there. "Invite Renter" instead generates a one-time secure link tied to a specific person.</p>' +
+      '</div>'
+    );
+  }
+  function wireRenterActionsCard() {
+    qs('#copy-portal-link-btn').addEventListener('click', async () => {
+      const url = location.origin + '/renter';
+      try { await navigator.clipboard.writeText(url); Toast.show('Renter portal link copied.', 'success'); }
+      catch (e) { Toast.show('Could not copy automatically — the link is ' + url, 'error'); }
+    });
+    qs('#invite-renter-btn').addEventListener('click', () => LeaseAgreementUI.openInviteRenterModal(() => render()));
   }
 
   function renderSampleBanner(sampleStatus) {
@@ -229,7 +259,8 @@ const DashboardView = (function () {
         '<div class="body">' +
           '<div><div class="name">' + escapeHtml(p.name) + (p.isSample ? ' <span class="badge sample">sample</span>' : '') + '</div>' +
           '<div class="addr">' + escapeHtml([p.address.line1, p.address.city, p.address.state].filter(Boolean).join(', ') || 'No address yet') + '</div></div>' +
-          '<div class="tenant-line">' + (p.currentTenant ? escapeHtml(p.currentTenant.name) : (p.status === 'archived' ? 'Archived' : 'Vacant')) + '</div>' +
+          '<div class="tenant-line">' + (p.currentTenant ? escapeHtml(p.currentTenant.name) :
+            (p.pendingTenant ? escapeHtml(p.pendingTenant.name) + ' <span class="badge warn">lease pending</span>' : (p.status === 'archived' ? 'Archived' : 'Vacant'))) + '</div>' +
           '<div class="row"><span class="rent money">' + centsToDisplay(p.monthlyRentCents) + '<span style="font-size:11px;font-family:var(--sans);color:var(--ink-soft)"> /mo</span></span>' +
             (p.hasNoLeaseYet ? '<span class="field-hint">No lease</span>' : statusPill(p.rentStatus)) +
           '</div>' +

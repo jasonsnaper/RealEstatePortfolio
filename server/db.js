@@ -459,6 +459,86 @@ CREATE TABLE IF NOT EXISTS payment_statements (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Reusable lease document templates. is_sample marks the one built-in demo
+-- template every owner can see without creating their own (clearly labeled,
+-- never described as legally reviewed — see server/lib/leaseAgreements.js);
+-- an owner's own saved templates (is_sample = 0) are private to them.
+CREATE TABLE IF NOT EXISTS lease_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id INTEGER NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  jurisdiction TEXT,
+  body_text TEXT NOT NULL,
+  is_sample INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- One row per lease-agreement "envelope" (in e-signature terms). A lease can
+-- accumulate several rows over time (a voided draft replaced by a corrected
+-- one) but at most one is ever non-terminal at once per lease — enforced in
+-- code (server/lib/leaseAgreements.js), not a constraint, since SQLite can't
+-- easily express "at most one open row per lease_id" declaratively.
+-- fields_json and body_snapshot are both frozen the instant the agreement is
+-- sent (status moves past 'draft'): editing terms after that means voiding
+-- this row and creating a fresh one via replaces_agreement_id, never
+-- mutating a sent document in place, and never carrying a signature onto
+-- changed terms.
+CREATE TABLE IF NOT EXISTS lease_agreements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lease_id INTEGER NOT NULL REFERENCES leases(id) ON DELETE CASCADE,
+  template_id INTEGER REFERENCES lease_templates(id),
+  status TEXT NOT NULL DEFAULT 'draft',
+  version INTEGER NOT NULL DEFAULT 1,
+  replaces_agreement_id INTEGER REFERENCES lease_agreements(id),
+  fields_json TEXT NOT NULL,
+  body_snapshot TEXT,
+  provider TEXT NOT NULL DEFAULT 'demo',
+  final_pdf_path TEXT,
+  document_hash TEXT,
+  decline_reason TEXT,
+  correction_request TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  sent_at TEXT,
+  completed_at TEXT,
+  voided_at TEXT
+);
+
+-- One row per required signer on an agreement: the landlord (renter_id
+-- NULL) plus one per tenant/co-tenant (renter_id set). Every signing action
+-- is looked up by (agreement_id, the caller's OWN session identity), never
+-- by a signer id the caller supplies — that, not a permissions check alone,
+-- is what makes it structurally impossible for one signer to complete
+-- another person's field.
+CREATE TABLE IF NOT EXISTS lease_signers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agreement_id INTEGER NOT NULL REFERENCES lease_agreements(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  renter_id INTEGER REFERENCES renters(id),
+  display_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  consented_at TEXT,
+  signed_at TEXT,
+  signature_text TEXT,
+  decline_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Append-only signing-ceremony audit trail, one row per meaningful event
+-- (sent, viewed, consented, signed, correction requested, declined, voided,
+-- completed). Separate from the app-wide audit_log table below (which stays
+-- focused on owner-initiated writes) because this one is surfaced directly
+-- as the completed agreement's own "signing audit record".
+CREATE TABLE IF NOT EXISTS lease_agreement_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agreement_id INTEGER NOT NULL REFERENCES lease_agreements(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  actor_type TEXT NOT NULL,
+  actor_id INTEGER,
+  detail_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   actor_type TEXT NOT NULL,
@@ -488,6 +568,11 @@ CREATE INDEX IF NOT EXISTS idx_document_shares_document ON document_shares(docum
 CREATE INDEX IF NOT EXISTS idx_document_shares_lease ON document_shares(lease_id);
 CREATE INDEX IF NOT EXISTS idx_document_shares_renter ON document_shares(renter_id);
 CREATE INDEX IF NOT EXISTS idx_payment_statements_lease ON payment_statements(lease_id);
+CREATE INDEX IF NOT EXISTS idx_lease_templates_owner ON lease_templates(owner_id);
+CREATE INDEX IF NOT EXISTS idx_lease_agreements_lease ON lease_agreements(lease_id);
+CREATE INDEX IF NOT EXISTS idx_lease_signers_agreement ON lease_signers(agreement_id);
+CREATE INDEX IF NOT EXISTS idx_lease_signers_renter ON lease_signers(renter_id);
+CREATE INDEX IF NOT EXISTS idx_lease_agreement_events_agreement ON lease_agreement_events(agreement_id);
 `;
 
 // Additive migrations for columns added after a database's initial CREATE

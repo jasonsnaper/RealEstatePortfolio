@@ -2,6 +2,7 @@ const { apiError, sendJson } = require('../lib/router');
 const { requireAuth, getOwnedPropertyOr404, runInTransaction, logAudit } = require('../lib/helpers');
 const { createRenterToken } = require('../lib/renterAuth');
 const { findOrCreateRenter, serializeRenter } = require('../lib/renters');
+const { serializeLease } = require('./leases');
 
 const ROLES = ['primary', 'co_renter'];
 
@@ -80,6 +81,84 @@ function registerRenterManagementRoutes(router, { db, appBaseUrl }) {
     console.log(`\n[Renter invitation] ${membership.name} <${membership.email}> invited to ${lease.property_name}. Link (valid 14 days): ${url}\n`);
     logAudit(db, { actorType: 'owner', actorId: owner.id, action: 'invite_renter', entityType: 'renter', entityId: membership.id, after: { leaseId: lease.id } });
     sendJson(res, 201, { url, expiresInDays: 14 });
+  });
+
+  // Generates an invitation NOT tied to any lease/property yet — the "Invite
+  // Renter" button on the dashboard. Accepting it (server/routes/renterAuth.js)
+  // creates/activates a renter account with no lease_renters row at all, so
+  // it lands in "Unassigned Renters" below until the owner assigns them
+  // somewhere. Deliberately the same shape as the lease-scoped invite above
+  // (a copyable link, no real email provider configured) — see that route's
+  // comment. Either an existing (as yet unassigned) renter can be re-invited
+  // by id, or a brand-new one is created from a name/email/phone the owner
+  // already knows, same dedup rule as findOrCreateRenter throughout.
+  router.post('/api/renters/invite', async (req, res) => {
+    const owner = requireAuth(db, req);
+    const { renterId, name, email, phone } = req.body;
+    let renter;
+    if (renterId) {
+      renter = db.prepare('SELECT * FROM renters WHERE id = ? AND owner_id = ?').get(renterId, owner.id);
+      if (!renter) throw apiError(404, 'Renter not found');
+    } else {
+      if (!email || !String(email).trim()) throw apiError(400, "An email address is required to send an invitation — it's also how the renter signs in.");
+      renter = findOrCreateRenter(db, owner.id, { name: (name && name.trim()) || String(email).split('@')[0], email, phone });
+    }
+    if (renter.password_hash) throw apiError(409, `${renter.name} already has a portal account. Use "forgot password" if they lost their password, not a new invite.`);
+    if (!renter.email) throw apiError(400, 'Add an email address for this renter before inviting them.');
+
+    const token = createRenterToken(db, renter.id, 'invitation', { leaseId: null, role: null });
+    const url = `${appBaseUrl}/renter#/accept-invite/${token}`;
+    console.log(`\n[Renter invitation] ${renter.name} <${renter.email}> invited (no property assigned yet). Link (valid 14 days): ${url}\n`);
+    logAudit(db, { actorType: 'owner', actorId: owner.id, action: 'invite_renter', entityType: 'renter', entityId: renter.id, after: { generic: true } });
+    sendJson(res, 201, { url, expiresInDays: 14, renter: serializeRenter(renter) });
+  });
+
+  // Renters with an account but no lease_renters row at all — either just
+  // accepted a generic invite, or were created without ever being put on a
+  // lease. This is the ENTIRE "Unassigned Renters" list: no separate table,
+  // no cross-landlord directory, just this owner's own renters minus
+  // whoever's already on something.
+  router.get('/api/renters/unassigned', async (req, res) => {
+    const owner = requireAuth(db, req);
+    const rows = db.prepare(`
+      SELECT * FROM renters WHERE owner_id = ? AND merged_into_renter_id IS NULL AND id NOT IN (SELECT renter_id FROM lease_renters) ORDER BY name
+    `).all(owner.id);
+    sendJson(res, 200, rows.map(serializeRenter));
+  });
+
+  // Assigns an unassigned renter to a property as a brand-new DRAFT tenancy
+  // ("Lease Pending" in the UI) — no rent, deposit, or dates are locked in
+  // yet; those get filled in and reviewed during lease preparation
+  // (server/routes/leaseAgreements.js) and only take effect once that
+  // agreement completes (server/lib/leaseAgreements.js's
+  // syncLeaseFromCompletedAgreement). A draft lease never bills anyone —
+  // server/lib/chargeGenerator.js only generates charges for an ACTIVE
+  // lease — so "pending" really does mean nothing happens yet.
+  router.post('/api/renters/:renterId/assign', async (req, res) => {
+    const owner = requireAuth(db, req);
+    const renter = db.prepare('SELECT * FROM renters WHERE id = ? AND owner_id = ? AND merged_into_renter_id IS NULL').get(req.params.renterId, owner.id);
+    if (!renter) throw apiError(404, 'Renter not found');
+    const property = getOwnedPropertyOr404(db, owner.id, req.body.propertyId);
+    const { startDate } = req.body;
+    if (!startDate) throw apiError(400, 'A proposed lease start / move-in date is required');
+    const chosenRole = ROLES.includes(req.body.role) ? req.body.role : 'primary';
+
+    // Same conflict rule as POST /api/properties/:id/leases — an
+    // active-OR-draft lease already occupies this property.
+    const conflicting = db.prepare("SELECT id FROM leases WHERE property_id = ? AND status IN ('active', 'draft')").get(property.id);
+    if (conflicting) throw apiError(409, 'This property already has an active or pending lease. End or cancel it before assigning a new renter.');
+
+    const unit = db.prepare('SELECT id FROM units WHERE property_id = ? LIMIT 1').get(property.id);
+    const result = db.prepare(`
+      INSERT INTO leases (property_id, unit_id, tenant_name, tenant_email, tenant_phone, start_date, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'draft')
+    `).run(property.id, unit ? unit.id : null, renter.name, renter.email, renter.phone, startDate);
+    const leaseId = result.lastInsertRowid;
+    db.prepare('INSERT INTO lease_renters (lease_id, renter_id, role) VALUES (?, ?, ?)').run(leaseId, renter.id, chosenRole);
+
+    logAudit(db, { actorType: 'owner', actorId: owner.id, action: 'assign_renter_to_property', entityType: 'lease', entityId: leaseId, after: { renterId: renter.id, propertyId: property.id, startDate } });
+    const lease = db.prepare('SELECT * FROM leases WHERE id = ?').get(leaseId);
+    sendJson(res, 201, serializeLease(db, lease, property.timezone));
   });
 
   // All of this owner's renters across every property — used for the
